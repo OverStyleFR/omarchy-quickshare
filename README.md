@@ -13,7 +13,7 @@ Send photos, videos and files between your Android phone and Omarchy using the p
 - **Stay in control:** compare the code, approve incoming files, follow progress and cancel explicitly.
 - **English or Español:** choose your language in the panel.
 
-The workflow screenshots below show the actual plugin with **illustrative sample data**. Device names, files, verification codes and progress are examples, not live transfer results. See the [pictured user guide](docs/USER_GUIDE.md) for the full walkthrough.
+See the [pictured user guide](docs/USER_GUIDE.md) for the full walkthrough.
 
 ## Install
 
@@ -36,9 +36,9 @@ After first setup, save work and restart Nautilus to load its extension.
 3. Compare the code on both devices.
 4. Accept the request on the PC only if the code matches.
 
-![Incoming Quick Share request with verification code and Accept/Reject controls — illustrative demo](docs/assets/screenshots/02-incoming-pin.png)
+![Incoming Quick Share request with verification code and Accept/Reject controls](docs/assets/screenshots/02-incoming-pin.png)
 
-*Compare the code on both devices before accepting. The pictured code is an example, not a code to reuse.*
+*Compare the code on both devices before accepting.*
 
 Received files go to your configured download folder. You can change it in the panel.
 
@@ -49,9 +49,9 @@ Received files go to your configured download folder. You can change it in the p
 3. Select the phone if several destinations are available; a sole destination is selected automatically.
 4. Press **Send**, compare the code and approve the transfer on both devices.
 
-![Android destination selected with two files ready to send — illustrative demo](docs/assets/screenshots/03-send-files.png)
+![Android destination selected with two files ready to send](docs/assets/screenshots/03-send-files.png)
 
-*Check the destination and file selection, then press Send. The selected phone and files are examples.*
+*Check the destination and file selection, then press Send.*
 
 Opening the panel never sends a file automatically. Closing it does not stop an active transfer; use **Cancel** when you want to stop.
 
