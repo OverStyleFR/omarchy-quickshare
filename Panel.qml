@@ -266,6 +266,13 @@ Ui.Panel {
             }
           }
           BodyText {
+            text: "Powered by Jhonny Suarez - PuroDelphi"
+            color: root.dim
+            font.pixelSize: Style.font.bodySmall
+            horizontalAlignment: Text.AlignHCenter
+            Layout.topMargin: Style.spacing.controlGap
+          }
+          BodyText {
             visible: !root.connected
             text: root.tr("Reconnecting to the service. You can choose files now; sending and approval will be available once it reconnects.", "Reconectando al servicio. Puedes elegir archivos; el envío y la autorización estarán disponibles cuando vuelva.")
             color: root.dim
@@ -614,13 +621,6 @@ Ui.Panel {
                 onClicked: service.downloadDirectory(directory.text)
               }
             }
-          }
-          BodyText {
-            text: "Powered by Jhonny Suarez - PuroDelphi"
-            color: root.dim
-            font.pixelSize: Style.font.bodySmall
-            horizontalAlignment: Text.AlignHCenter
-            Layout.topMargin: Style.spacing.controlGap
           }
         }
       }

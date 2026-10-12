@@ -6,6 +6,10 @@ Send and receive files between Omarchy and Android's existing **Quick Share** in
 
 Repository: [PuroDelphi/omarchy-quickshare](https://github.com/PuroDelphi/omarchy-quickshare).
 
+![Quick Share native Omarchy panel in English](preview.png)
+
+The idle preview is captured from the real theme-integrated panel; it contains no device identifiers, private paths or verification codes.
+
 ## Status and scope
 
 This is a working integration with **incomplete transport and compatibility validation**, not a universal Android compatibility claim or a marketplace approval.

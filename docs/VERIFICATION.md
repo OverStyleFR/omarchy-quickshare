@@ -157,7 +157,7 @@ Real Arch package install, administrative `pacman -R`, reinstall and corrected r
 
 Corrected uninstall/reinstall preserved the full inline JSON/Spanish, witness file and `settings.toml` bytes/mode/owner/mtime, and preexisting Downloads metadata. Nautilus registration returned, normal service active, no transfers, capabilities available. Package supplies `omarchy-quickshare-uninstall` without a checkout. Native Omarchy removal deletes inline preferences; preference preservation belongs to the project uninstaller.
 
-**Fresh graphical-session automatic startup remains unobserved.** Restarting the service or shell is not a substitute. Layout/branding cutover still requires the main integrator's checks.
+**Fresh graphical-session automatic startup remains unobserved.** Restarting the service or shell is not a substitute. Root-layout and branding checks are recorded below.
 
 ## 7. Local development evidence and remaining matrix
 
@@ -176,3 +176,16 @@ Distinct unmet criteria retained in the plan:
 - Independent Android hashes still missing for particular historical fixtures can be read from existing copies; do not manufacture another basic send to compensate for documentation gaps.
 
 No universal hardware/version claim, marketplace approval, lossless resume or completed R1–R10 delivery follows from these records.
+
+## 8. Public repository, licensing and native branding
+
+- Published the complete source at [PuroDelphi/omarchy-quickshare](https://github.com/PuroDelphi/omarchy-quickshare), preserving the repository's initial history. English README, implementation plan, contribution/security/conduct policies, issue forms, PR checklist and CODEOWNERS are included. Private vulnerability reporting is enabled.
+- The owner explicitly chose MIT for original project code while retaining GPL-3.0-only for the vendored core and its modifications. The combined daemon is **not MIT-only**; corresponding-source and notice obligations remain. Dependency notices were regenerated, and the Git dependency is pinned to its full locked revision.
+- Exactly one root `manifest.json` supplies root QML entry points with the deployed stable ID `macondo.quickshare`. The native `omarchy plugin validate` command accepted this layout.
+- The initial published commit `496274f4f50bfd6757aa2489c07a7667f29b9d87` passed [GitHub CI](https://github.com/PuroDelphi/omarchy-quickshare/actions/runs/38191860491). Local locked workspace tests passed **66**, with one physical Bluetooth regression ignored by default. Shell scripts and the Nautilus module were parsed individually.
+- Official marketplace tooling at revision `2b49af8e6fbc24ea25ad8ac6a54b3d55f09b4364` accepted that public snapshot. Its complete static baseline reported **zero findings** and **review-required** for installer, privilege, remote-build, package-manager and service-management capabilities. This is not a security audit or marketplace approval; later commits require their own exact-commit validation.
+- **Powered by Jhonny Suarez - PuroDelphi** was observed on the real native English and Spanish panel. It sits below the hero so transfers do not hide it below the fold. The English `preview.png` is an actual idle Wayland capture, not a mockup; it excludes peer names, paths, filenames and PINs. The user's Spanish preference was restored.
+- Reloading the shell to deploy the layout kept the existing daemon instance, no active transfers and `errors: []`. The owned Nautilus registration remained intact. No approved basic Android transfer was repeated.
+- An updated package was built locally, but administrative upgrade could not proceed through this tool session: `pkexec` could not create its textual authentication agent and `sudo -n` required a password. No authorization policy was weakened. System package `0.1.0-2` remains installed; current QML resources are deployed in the owned user plugin with the previous plugin preserved outside the registry.
+
+The repository needs the marketplace's **manual-setup** classification because its external backend and Nautilus registration are not installed by Omarchy's native Git plugin installer. No submission issue was created: the official AI submission policy requires the owner to inspect and explicitly approve the final title, body and checklist first. Publication in the catalog additionally requires a curator's exact-commit review.
