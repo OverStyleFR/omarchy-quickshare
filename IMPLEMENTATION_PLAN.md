@@ -257,7 +257,7 @@ Record results when observed: direction, radio/network conditions, confirmed med
 | LAN without Bluetooth | Same network, Bluetooth off | Determine Android's actual discovery/connection dependence | Computer backend absent was observed; both-device Bluetooth-off condition is not established. |
 | No internet | Local LAN/direct route without WAN | Files without external service | Controlled WAN-off condition unverified. |
 | No router | No shared LAN, Wi-Fi/Bluetooth available | Automatic direct/hotspot negotiation, both-way files | Local hotspot creation/restoration only; native Android negotiation open. |
-| Bluetooth only | Wi-Fi off at both ends | Discovery/data both ways and correct hashes | Native RFCOMM both ways documented; both-Wi-Fi-off matrix and missing independent hashes open. |
+| Bluetooth only | Wi-Fi off at both ends | Discovery/data both ways and correct hashes | Native outgoing 64 MiB completed with both Wi-Fi off, Bluetooth data/no errors and USB used only for Internet; new Android-copy hash pending. Inverse both-Wi-Fi-off case, Bluetooth cancel/disconnect and remaining hashes open. |
 | Blocked mDNS | Existing LAN, Bluetooth available | Alternative discovery, compatible route without exclusive mDNS dependency | Controlled physical case open. |
 | Isolated LAN | No inter-client IP connectivity | Do not treat LAN as usable; try a compatible alternative | Controlled physical case open. |
 | No route | Necessary radios/transports unavailable | Clear error, no fake transfer or infinite wait | Local backend/error evidence exists; complete physical matrix open. |
