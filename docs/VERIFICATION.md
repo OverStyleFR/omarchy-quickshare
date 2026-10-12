@@ -198,7 +198,7 @@ Local NetworkManager created a real WPA2 AP, then explicitly removed temporary p
 Distinct unmet criteria retained in the plan:
 
 - Native routerless Wi-Fi negotiation, both-way files and network restoration/abnormal cleanup.
-- Both devices' Wi-Fi disabled, native Bluetooth both-way integrity and remaining cancel/disconnect conditions.
+- Remaining native Bluetooth cancellation/disconnection and outgoing-batch conditions. The 64 MiB/both-devices-Wi-Fi-off/both-direction integrity condition above is approved; do not repeat it.
 - Controlled mDNS block, client isolation, WAN-off and both-device Bluetooth-off LAN dependency.
 - Unwritable/full destination physical behavior and remaining equipment/version coverage.
 - Native empty-file failure, public Android partial after abrupt cutoff, and unmatched full camera-video hash remain explicitly unapproved.
