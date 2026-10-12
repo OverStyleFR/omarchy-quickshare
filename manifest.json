@@ -4,7 +4,7 @@
   "name": "Quick Share",
   "version": "0.1.1",
   "author": "Jhonny Suarez - PuroDelphi",
-  "description": "Share files with Android using the Quick Share user service",
+  "description": "Send and receive photos, videos and files between Android and Omarchy over LAN or Bluetooth. Native Quick Share, Nautilus integration, no extra Android app.",
   "license": "MIT",
   "kinds": ["service", "bar-widget", "panel"],
   "keepLoaded": true,
