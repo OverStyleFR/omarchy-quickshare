@@ -71,13 +71,13 @@ SDP/RFCOMM now start `connect` on the owned descriptor after deregistration and 
 
 After correction, native Omarchy → Android sent the **104-byte fixture over Bluetooth**, `completed`, no errors, with engine LAN/hotspot disabled. The code was presented and acceptance was not automated. User confirmed correct received files; independent hash of that Android destination remains unrecorded. Normal service restored, visibility off, capabilities available/errors empty, computer Wi-Fi retained. Do not ask the user to repeat the already approved visual inspection.
 
-### Both-device Wi-Fi off: native outgoing 64 MiB completed; independent hash pending
+### Both-device Wi-Fi off: native outgoing 64 MiB and independent hash approved
 
 On 12 October 2026, native Omarchy → Android completed **67,108,864/67,108,864 bytes** with runtime transport **`bluetooth`**, `error: null` and engine `errors: []`. The user confirmed completion on the phone. This is a distinct large-outgoing/both-Wi-Fi-off condition, not another basic transfer to reconstruct earlier evidence.
 
 The user switched phone Wi-Fi off; fresh subprocess observations verified computer Wi-Fi off before sending and still off at terminal completion. USB tethering maintained Internet for coordination: HTTPS bound exclusively to its interface returned 200 with both Wi-Fi off. The engine ran **`serve --no-lan --no-hotspot`**, so that USB IP route could not carry Quick Share files. A single native phone was discovered through Bluetooth; code acceptance was not automated by the observer. Explicit manual PIN comparison was not independently recorded for this run.
 
-Source SHA-256 before and after sending remained `b9e838f0fa17dd4b381a64b6ccc2056d9956e4f0046048f10abb58186cde9b8e`. The independent hash of the **newly received** Android copy is still pending; earlier LAN copies of the same fixture do not substitute. No resend is required for that check.
+Source SHA-256 before and after sending remained `b9e838f0fa17dd4b381a64b6ccc2056d9956e4f0046048f10abb58186cde9b8e`. After selecting USB File Transfer, the **newly received** Android copy was independently read through USB/MTP: **67,108,864 bytes**, the same SHA-256, and `cmp` exit 0 against the source. Its modification time was one second after the recorded transfer completion, identifying this new receive rather than an older LAN copy. No resend, rename, metadata edit or deletion was used to obtain equality. This outgoing large-file/both-Wi-Fi-off case is approved.
 
 After recording terminal evidence, computer Wi-Fi reconnected, the owned runtime-only isolation drop-in was removed and the normal installed service restored. LAN/Bluetooth/hotspot backends became available, visibility stayed off, no active transfers/errors remained, the safety timer was stopped and the configuration hash matched the lifecycle baseline. The observer did not change the source binary/persistent unit/preferences or edit/delete original and received files. The inverse both-Wi-Fi-off direction and remaining Bluetooth cancellation/disconnection cases are still open.
 
