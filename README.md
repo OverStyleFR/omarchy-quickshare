@@ -17,7 +17,7 @@ This is a working integration with **incomplete transport and compatibility vali
 | Area | Recorded result |
 | --- | --- |
 | Native Android LAN transfers | Both directions, small/64 MiB files, batches and Unicode names approved; selected Android copies independently verified through USB/MTP. |
-| Native Bluetooth transfers | Both directions completed under documented conditions; a received photo has matching independent Android SHA-256. Native 64 MiB transfers with Wi-Fi off on **both** devices are approved in **both directions**, with independent Android source/destination SHA-256 and byte equality. Bluetooth cancellation/disconnection and outgoing batches remain pending. |
+| Native Bluetooth transfers | Both directions completed under documented conditions; a received photo has matching independent Android SHA-256. Native 64 MiB transfers with Wi-Fi off on **both** devices are approved in **both directions**, with independent Android source/destination SHA-256 and byte equality. Incoming active-data cancellation left no published or staged partial. Outgoing cancellation, disconnection and outgoing batches remain pending. |
 | Desktop integration | Native consent/notification with panel closed, Nautilus single/multi-file sends, LAN cancel/reject and active shell reload approved. English/Spanish preference persistence verified. |
 | Routerless Wi-Fi | NetworkManager hotspot creation/restoration tested locally; native Android negotiation and bidirectional files remain unvalidated. |
 | Known negatives | Native empty-file send failed. Android retained a public partial after an abrupt radio disconnection; remote cleanup is not approved. |

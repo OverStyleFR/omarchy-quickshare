@@ -91,6 +91,16 @@ The existing PC fixture was preserved: the new published file was **`1_grande-64
 
 Terminal evidence was saved before restoring Wi-Fi/restarting the daemon. The owned isolation file was removed, the normal installed service returned with all three backends ready, no errors/transfers and visibility off; the safety timer was stopped. Computer Wi-Fi connected and its exclusively bound HTTPS request returned 200; preferences retained their baseline hash. This closes the **64 MiB/both-Wi-Fi-off/both-direction integrity condition**, not the remaining Bluetooth cancellation/disconnection, outgoing-batch or negotiated hotspot matrix.
 
+### Native inbound Bluetooth cancellation: no publication or leftover staging
+
+On 12 October 2026, Android offered a **7,561,800-byte video** over native Bluetooth. The receiver progressed through authentication, local waiting-for-acceptance and data transfer, then reached **`cancelled` at 574,200 bytes**, `error: null`, engine `errors: []`. The user confirmed cancellation. A different nonempty file from the suggested fixture is valid for this active-data cancellation case; it is not a full-file integrity test.
+
+The engine ran temporary **`serve --no-lan --no-hotspot`**, with Bluetooth ready and IP file routes unavailable. Computer Wi-Fi remained connected for coordination. Acceptance/cancellation were not automated. The auxiliary “cancel now” notification's 1 MiB threshold was never reached, so no such notification was sent; cancelling earlier with actual received bytes still exercises the intended path. Click count was not independently observed.
+
+After terminal cancellation, the destination contained neither the offered filename/collision variants nor any **`.omarchy-quickshare-*.partial`** staging file. The observer did not delete files to obtain that result. The existing original and successful 64 MiB receive still matched their SHA-256 baselines. Terminal evidence was saved before removing the owned runtime isolation and restarting the normal service: all three backends ready, no errors/transfers, visibility off, preferences unchanged and computer-Wi-Fi-bound HTTPS 200.
+
+This approves **incoming native Bluetooth active-data cancellation and local non-publication/staging cleanup**. It does not approve outgoing Android partial cleanup, abrupt Bluetooth cutoff or click-count behavior without direct observation.
+
 ### Closed-panel native notification and independent photo hash
 
 With the panel closed and DND off, Android produced an actual **Quick Share request** notification. The observer only read state/captured a redacted heading; the user handled consent and confirmed completion. Bluetooth receive completed **392,114/392,114 bytes** without error.
@@ -198,7 +208,7 @@ Local NetworkManager created a real WPA2 AP, then explicitly removed temporary p
 Distinct unmet criteria retained in the plan:
 
 - Native routerless Wi-Fi negotiation, both-way files and network restoration/abnormal cleanup.
-- Remaining native Bluetooth cancellation/disconnection and outgoing-batch conditions. The 64 MiB/both-devices-Wi-Fi-off/both-direction integrity condition above is approved; do not repeat it.
+- Remaining native Bluetooth outgoing cancellation, disconnection and outgoing-batch conditions. Incoming active-data cancellation/cleanup and the 64 MiB/both-devices-Wi-Fi-off/both-direction integrity condition above are approved; do not repeat them.
 - Controlled mDNS block, client isolation, WAN-off and both-device Bluetooth-off LAN dependency.
 - Unwritable/full destination physical behavior and remaining equipment/version coverage.
 - Native empty-file failure, public Android partial after abrupt cutoff, and unmatched full camera-video hash remain explicitly unapproved.
