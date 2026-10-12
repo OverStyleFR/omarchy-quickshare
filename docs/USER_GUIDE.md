@@ -4,6 +4,8 @@
 
 Omarchy Quick Share connects your desktop to Android's existing Quick Share. The phone does not need a companion application. The desktop panel uses Omarchy's theme and supports English and Español.
 
+**About the screenshots:** these are captures of the actual Omarchy plugin and Nautilus interface. Screens marked **ILLUSTRATIVE DEMO** use sample devices, files, verification codes and progress to explain the workflow; they are not live transfer results. Never reuse the example verification code. Your theme and language may change the appearance.
+
 ## Before sharing
 
 - Complete **Install service** from the panel and wait for **Ready**.
@@ -17,11 +19,20 @@ Transport availability depends on the radio, network and permissions. The transf
 
 1. On the PC, open the Quick Share panel.
 2. Select **Receive for 120 s**. The bar shows the remaining visibility time.
+
+![PC control for temporary Quick Share visibility — illustrative demo](assets/screenshots/01-receive-visibility.png)
+
+*Use Receive for 120 s when the phone will send to this PC. The image shows the button before activation; once enabled, it shows the remaining visibility time.*
+
 3. On the phone, open the file and choose **Share**.
 4. Choose **Quick Share** in Android's share menu.
 5. Select the displayed computer.
 6. Compare the code shown on both devices.
 7. On the PC, accept only if the code matches and the offered files are expected.
+
+![Incoming file offer, verification code and consent buttons — illustrative demo](assets/screenshots/02-incoming-pin.png)
+
+*The incoming card is where you compare the code and choose PIN matches · accept or Reject. Accept only the request you expect, using the code currently shown on both devices—not the example above.*
 
 You can reject an unwanted offer. Incoming notifications work with the panel closed; open the request to inspect it and handle consent.
 
@@ -36,11 +47,19 @@ Visibility is temporary. Its expiry stops new discovery offers, not an already e
 5. Compare the verification code on both devices.
 6. Approve the request on each device when prompted.
 
+![Two files selected and an Android destination ready for sending — illustrative demo](assets/screenshots/03-send-files.png)
+
+*The selected device is highlighted. Review both the destination and the file list before using Send; choosing files alone does not start a transfer.*
+
 A manually selected destination that disappears is cleared, not replaced with another device. A preloaded file selection never starts sending by itself.
 
 ### From Nautilus
 
 Select one or multiple local files, right-click and choose **Send via Quick Share**. This opens the panel with the exact selection; you still control the destination, Send and consent.
+
+![Two local example files selected in Nautilus with Send via Quick Share in the context menu](assets/screenshots/06-nautilus-menu.png)
+
+*Select the files first, then right-click the selection. Send via Quick Share hands that selection to the desktop panel; it does not send immediately.*
 
 Folders, remote URLs and mixed unsupported selections do not offer this action. Spaces and Unicode names are supported. The extension accepts up to 1,000 local files per selection.
 
@@ -50,9 +69,28 @@ After installing or updating the Python extension, save work in all Nautilus win
 
 Cards show byte progress, the active transport and the terminal result. Use **Cancel** to stop an active transfer. Closing the panel does not cancel it, and the Rust service continues independently of the shell.
 
+![Transfer card showing byte progress, transport and Cancel — illustrative demo](assets/screenshots/04-transfer-progress.png)
+
+*The card identifies the active medium and the bytes transferred. Cancel is the explicit stop action; closing the panel is not. The pictured progress is illustrative.*
+
 **Cancelling…** indicates a request in progress, not fabricated completion. A disconnected peer produces a failed transfer rather than a completed file.
 
 Omarchy stages incoming files privately and publishes them only after completion. Existing files are not overwritten: a duplicate name receives a numeric prefix. Local staged partials are removed on cancellation or failure. Android manages its own destination/cache cleanup; sender cancellation does not provide a remote-file deletion command.
+
+## Service controls and maintenance
+
+If the service is missing or incompatible, setup controls appear automatically. When the panel is **Ready**, the service controls are hidden until you expand settings:
+
+1. Scroll toward the bottom of the panel and open **Settings**.
+2. Scroll back toward the top to find the **Service** section.
+3. Choose **Install service**, **Update service** or **Remove service** as appropriate. A dedicated terminal explains the action and any authorization it needs.
+
+![Expanded service controls for installation, update and removal — illustrative demo](assets/screenshots/05-service-controls.png)
+
+*These buttons maintain the Rust backend and Nautilus registration. Omarchy's native plugin commands maintain the Git plugin itself; see [Installation and maintenance](INSTALLATION.md) for the complete lifecycle.*
+
+Finish or cancel active transfers before service maintenance. If a plugin update leaves the previous panel controls on screen, run `omarchy restart shell` to reload Quickshell; this does not restart the independent transfer service.
+
 
 ## Language and destination
 
