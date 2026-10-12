@@ -1,0 +1,22 @@
+{
+  "schemaVersion": 1,
+  "id": "macondo.quickshare",
+  "name": "Quick Share",
+  "version": "0.1.0",
+  "author": "Jhonny Suarez - PuroDelphi",
+  "description": "Share files with Android using the Quick Share user service",
+  "license": "MIT",
+  "kinds": ["service", "bar-widget", "panel"],
+  "keepLoaded": true,
+  "entryPoints": {
+    "service": "Service.qml",
+    "barWidget": "BarWidget.qml",
+    "panel": "Panel.qml"
+  },
+  "barWidget": {
+    "displayName": "Quick Share",
+    "category": "Network",
+    "allowMultiple": false,
+    "defaultSection": "right"
+  }
+}

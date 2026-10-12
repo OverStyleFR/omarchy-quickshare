@@ -1,0 +1,911 @@
+use crate::ui_language::UiLanguage;
+use crate::{integration::NautilusIntegration, BUS, INTERFACE, PATH};
+use anyhow::{bail, Context, Result};
+use directories::{BaseDirs, ProjectDirs, UserDirs};
+use rqs_lib::channel::{ChannelAction, ChannelDirection, ChannelMessage};
+use rqs_lib::{EndpointInfo, EngineOptions, OutboundPayload, SendInfo, Visibility, RQS};
+use serde::{Deserialize, Serialize};
+use std::collections::BTreeMap;
+use std::path::{Path, PathBuf};
+use std::sync::Arc;
+use std::time::{Duration, SystemTime, UNIX_EPOCH};
+use tokio::sync::{broadcast, mpsc, oneshot, watch, RwLock};
+use tokio_util::sync::CancellationToken;
+
+#[derive(Debug, Serialize, Deserialize)]
+struct Preferences {
+    download_directory: PathBuf,
+}
+
+impl Preferences {
+    fn file() -> Result<PathBuf> {
+        Ok(ProjectDirs::from("", "", "omarchy-quickshare")
+            .context("No se encontró la carpeta de configuración del usuario")?
+            .config_dir()
+            .join("settings.toml"))
+    }
+
+    fn load() -> Result<Self> {
+        let file = Self::file()?;
+        match std::fs::read_to_string(&file) {
+            Ok(contents) => toml::from_str(&contents).context("Configuración Quick Share inválida"),
+            Err(error) if error.kind() == std::io::ErrorKind::NotFound => {
+                let dirs = UserDirs::new().context("No se encontró el directorio del usuario")?;
+                let path = dirs
+                    .download_dir()
+                    .map(Path::to_owned)
+                    .unwrap_or_else(|| dirs.home_dir().join("Downloads"));
+                Ok(Self {
+                    download_directory: path,
+                })
+            }
+            Err(error) => Err(error.into()),
+        }
+    }
+
+    async fn save(&self) -> Result<()> {
+        let file = Self::file()?;
+        let directory = file.parent().context("Configuración sin directorio")?;
+        tokio::fs::create_dir_all(directory).await?;
+        let temporary = directory.join(format!("settings-{}.tmp", uuid::Uuid::new_v4()));
+        let contents = toml::to_string(self)?;
+        tokio::fs::write(&temporary, contents).await?;
+        match tokio::fs::rename(&temporary, &file).await {
+            Ok(()) => Ok(()),
+            Err(error) => {
+                let _ = tokio::fs::remove_file(temporary).await;
+                Err(error.into())
+            }
+        }
+    }
+}
+
+#[derive(Clone, Serialize)]
+struct Device {
+    id: String,
+    name: String,
+    transport: String,
+}
+
+#[derive(Clone, Serialize)]
+struct Transfer {
+    id: String,
+    direction: &'static str,
+    state: &'static str,
+    pin_code: Option<String>,
+    device_name: String,
+    files: Vec<String>,
+    total_bytes: u64,
+    transferred_bytes: u64,
+    transport: Option<String>,
+    error: Option<String>,
+    #[serde(skip)]
+    cancellation: Option<CancellationToken>,
+}
+
+fn terminal(state: &str) -> bool {
+    matches!(state, "completed" | "rejected" | "cancelled" | "failed")
+}
+
+#[derive(Serialize)]
+struct Capabilities {
+    lan: bool,
+    bluetooth: bool,
+    hotspot: bool,
+}
+
+#[derive(Serialize)]
+struct Snapshot {
+    version: u32,
+    instance_id: String,
+    visible: bool,
+    visibility_expires_at: Option<u64>,
+    network_consent: bool,
+    download_directory: String,
+    devices: Vec<Device>,
+    transfers: Vec<Transfer>,
+    capabilities: Capabilities,
+    errors: Vec<String>,
+}
+#[derive(Serialize)]
+struct SnapshotEnvelope<'a> {
+    revision: u64,
+    #[serde(flatten)]
+    snapshot: &'a Snapshot,
+}
+
+struct Shared {
+    state: RwLock<Snapshot>,
+    revisions: watch::Sender<u64>,
+    commands: mpsc::Sender<Operation>,
+}
+
+impl Shared {
+    fn changed(&self) {
+        self.revisions
+            .send_modify(|value| *value = value.wrapping_add(1));
+    }
+    async fn snapshot(&self) -> Result<String> {
+        let state = self.state.read().await;
+        Ok(serde_json::to_string(&SnapshotEnvelope {
+            revision: *self.revisions.borrow(),
+            snapshot: &state,
+        })?)
+    }
+    async fn execute(&self, command: Action) -> zbus::fdo::Result<String> {
+        let (tx, rx) = oneshot::channel();
+        self.commands
+            .send(Operation { command, reply: tx })
+            .await
+            .map_err(|_| zbus::fdo::Error::Failed("El motor no está disponible".into()))?;
+        rx.await
+            .map_err(|_| zbus::fdo::Error::Failed("El motor terminó".into()))?
+            .map_err(|error| zbus::fdo::Error::Failed(error.to_string()))
+    }
+}
+
+struct Interface(Arc<Shared>);
+
+#[zbus::interface(name = "io.omarchy.QuickShare1")]
+impl Interface {
+    async fn snapshot(&self) -> zbus::fdo::Result<String> {
+        self.0
+            .snapshot()
+            .await
+            .map_err(|e| zbus::fdo::Error::Failed(e.to_string()))
+    }
+    async fn set_visibility(&self, seconds: u32) -> zbus::fdo::Result<()> {
+        if seconds > 600 {
+            return Err(zbus::fdo::Error::InvalidArgs(
+                "Visibilidad permitida: 0–600 segundos".into(),
+            ));
+        }
+        self.0
+            .execute(Action::Visibility(seconds))
+            .await
+            .map(|_| ())
+    }
+    async fn set_network_consent(&self, allowed: bool) -> zbus::fdo::Result<()> {
+        self.0
+            .execute(Action::NetworkConsent(allowed))
+            .await
+            .map(|_| ())
+    }
+    async fn send(&self, peer_id: String, files: Vec<String>) -> zbus::fdo::Result<String> {
+        self.0.execute(Action::Send(peer_id, files)).await
+    }
+    async fn respond(&self, id: String, accept: bool) -> zbus::fdo::Result<()> {
+        self.0
+            .execute(Action::Respond(id, accept))
+            .await
+            .map(|_| ())
+    }
+    async fn cancel(&self, id: String) -> zbus::fdo::Result<()> {
+        self.0.execute(Action::Cancel(id)).await.map(|_| ())
+    }
+    async fn set_download_directory(&self, directory: String) -> zbus::fdo::Result<()> {
+        self.0
+            .execute(Action::Directory(directory))
+            .await
+            .map(|_| ())
+    }
+    #[zbus(signal)]
+    async fn changed(
+        emitter: &zbus::object_server::SignalEmitter<'_>,
+        snapshot: &str,
+    ) -> zbus::Result<()>;
+}
+
+enum Action {
+    Visibility(u32),
+    NetworkConsent(bool),
+    Send(String, Vec<String>),
+    Respond(String, bool),
+    Cancel(String),
+    Directory(String),
+}
+struct Operation {
+    command: Action,
+    reply: oneshot::Sender<Result<String>>,
+}
+
+fn now() -> u64 {
+    SystemTime::now()
+        .duration_since(UNIX_EPOCH)
+        .unwrap_or_default()
+        .as_secs()
+}
+
+async fn validate_directory(path: &Path) -> Result<PathBuf> {
+    if !path.is_absolute() {
+        bail!("La carpeta debe ser absoluta");
+    }
+    let path = tokio::fs::canonicalize(path).await?;
+    if !tokio::fs::metadata(&path).await?.is_dir() {
+        bail!("El destino no es una carpeta");
+    }
+    // Verify write permission without overwriting any existing file.
+    let probe = path.join(format!(".quickshare-check-{}", uuid::Uuid::new_v4()));
+    let file = tokio::fs::OpenOptions::new()
+        .write(true)
+        .create_new(true)
+        .open(&probe)
+        .await?;
+    drop(file);
+    tokio::fs::remove_file(probe).await?;
+    Ok(path)
+}
+
+async fn apply_operation(
+    shared: &Shared,
+    engine: &mut RQS,
+    sender: &mpsc::Sender<SendInfo>,
+    action: Action,
+) -> Result<String> {
+    match action {
+        Action::Visibility(seconds) => {
+            engine.change_visibility(if seconds == 0 {
+                Visibility::Invisible
+            } else {
+                Visibility::Visible
+            });
+            let mut state = shared.state.write().await;
+            state.visible = seconds != 0;
+            state.visibility_expires_at = (seconds != 0).then(|| now() + seconds as u64);
+        }
+        Action::NetworkConsent(allowed) => {
+            engine.set_network_consent(allowed);
+            shared.state.write().await.network_consent = allowed;
+        }
+        Action::Send(peer_id, paths) => {
+            if paths.is_empty() || paths.len() > 1000 {
+                bail!("Selecciona entre 1 y 1000 archivos");
+            }
+            let device = {
+                let state = shared.state.read().await;
+                if state
+                    .transfers
+                    .iter()
+                    .filter(|t| !terminal(t.state))
+                    .count()
+                    >= 16
+                {
+                    bail!("Hay demasiadas transferencias activas");
+                }
+                state
+                    .devices
+                    .iter()
+                    .find(|d| d.id == peer_id)
+                    .cloned()
+                    .context("El dispositivo ya no está disponible")?
+            };
+            let mut files = Vec::with_capacity(paths.len());
+            let mut total_bytes = 0_u64;
+            for path in paths {
+                let path = PathBuf::from(path);
+                if !path.is_absolute() {
+                    bail!("Las rutas deben ser absolutas");
+                }
+                let metadata = tokio::fs::metadata(&path).await?;
+                if !metadata.is_file() {
+                    bail!("Solo se pueden enviar archivos normales");
+                }
+                total_bytes = total_bytes
+                    .checked_add(metadata.len())
+                    .context("Tamaño total no representable")?;
+                let path = tokio::fs::canonicalize(path).await?;
+                tokio::fs::File::open(&path).await?;
+                files.push(path.to_str().context("Ruta no representable")?.to_owned());
+            }
+            let id = uuid::Uuid::new_v4().to_string();
+            let cancellation = CancellationToken::new();
+            // Keep state visible before the engine can emit its first event.
+            shared.state.write().await.transfers.push(Transfer {
+                id: id.clone(),
+                direction: "outbound",
+                state: "connecting",
+                pin_code: None,
+                device_name: device.name,
+                files: files.clone(),
+                total_bytes,
+                transferred_bytes: 0,
+                transport: None,
+                error: None,
+                cancellation: Some(cancellation.clone()),
+            });
+            if let Err(error) = sender
+                .send(SendInfo {
+                    id: id.clone(),
+                    addr: peer_id,
+                    ob: OutboundPayload::Files(files),
+                    cancellation,
+                })
+                .await
+            {
+                let mut state = shared.state.write().await;
+                if let Some(transfer) = state.transfers.iter_mut().find(|t| t.id == id) {
+                    transfer.state = "failed";
+                    transfer.error = Some(error.to_string());
+                }
+                shared.changed();
+                return Err(error.into());
+            }
+            shared.changed();
+            return Ok(id);
+        }
+        Action::Respond(id, accept) => {
+            let state = shared.state.read().await;
+            let transfer = state
+                .transfers
+                .iter()
+                .find(|t| t.id == id)
+                .context("Solicitud desconocida")?;
+            if transfer.state != "waiting_acceptance" {
+                bail!("La transferencia no está esperando aceptación");
+            }
+            engine
+                .message_sender
+                .send(ChannelMessage {
+                    id,
+                    direction: ChannelDirection::FrontToLib,
+                    action: Some(if accept {
+                        ChannelAction::AcceptTransfer
+                    } else {
+                        ChannelAction::RejectTransfer
+                    }),
+                    ..Default::default()
+                })
+                .context("El motor no está escuchando solicitudes")?;
+        }
+        Action::Cancel(id) => {
+            let state = shared.state.read().await;
+            let transfer = state
+                .transfers
+                .iter()
+                .find(|t| t.id == id)
+                .context("Transferencia desconocida")?;
+            if terminal(transfer.state) {
+                bail!("La transferencia ya terminó");
+            }
+            if let Some(cancellation) = &transfer.cancellation {
+                cancellation.cancel();
+                shared.changed();
+                return Ok(String::new());
+            }
+            engine
+                .message_sender
+                .send(ChannelMessage {
+                    id,
+                    direction: ChannelDirection::FrontToLib,
+                    action: Some(ChannelAction::CancelTransfer),
+                    ..Default::default()
+                })
+                .context("El motor no está escuchando cancelaciones")?;
+        }
+        Action::Directory(directory) => {
+            if shared
+                .state
+                .read()
+                .await
+                .transfers
+                .iter()
+                .any(|t| !terminal(t.state))
+            {
+                bail!("Espera a que terminen las transferencias antes de cambiar el destino");
+            }
+            let directory = validate_directory(Path::new(&directory)).await?;
+            Preferences {
+                download_directory: directory.clone(),
+            }
+            .save()
+            .await?;
+            engine.set_download_path(Some(directory.clone()));
+            shared.state.write().await.download_directory =
+                directory.to_string_lossy().into_owned();
+        }
+    }
+    shared.changed();
+    Ok(String::new())
+}
+
+fn normalized_state(state: &rqs_lib::State) -> &'static str {
+    use rqs_lib::State::*;
+    match state {
+        Initial | ReceivedConnectionRequest => "connecting",
+        WaitingForUserConsent => "waiting_acceptance",
+        NegotiatingTransport => "negotiating",
+        ReceivingFiles | SendingFiles => "transferring",
+        Finished => "completed",
+        Cancelled => "cancelled",
+        Rejected => "rejected",
+        Disconnected => "failed",
+        _ => "authenticating",
+    }
+}
+
+async fn handle_message(shared: &Shared, message: ChannelMessage) -> Option<Transfer> {
+    if message.direction != ChannelDirection::LibToFront {
+        return None;
+    }
+    let mut snapshot = shared.state.write().await;
+    if message.id.is_empty() {
+        if let Some(available) = message.bluetooth_available {
+            snapshot.capabilities.bluetooth = available;
+        }
+        if let Some(error) = message.error {
+            if snapshot.errors.len() >= 100 {
+                snapshot.errors.remove(0);
+            }
+            snapshot.errors.push(error);
+        }
+        drop(snapshot);
+        shared.changed();
+        return None;
+    }
+    let index = match snapshot.transfers.iter().position(|t| t.id == message.id) {
+        Some(index) => index,
+        None => {
+            snapshot.transfers.push(Transfer {
+                id: message.id.clone(),
+                direction: match message.rtype {
+                    Some(rqs_lib::channel::TransferType::Outbound) => "outbound",
+                    _ => "inbound",
+                },
+                state: "connecting",
+                pin_code: None,
+                device_name: "Dispositivo cercano".into(),
+                files: Vec::new(),
+                total_bytes: 0,
+                transferred_bytes: 0,
+                transport: None,
+                error: None,
+                cancellation: None,
+            });
+            snapshot.transfers.len() - 1
+        }
+    };
+    let transfer = &mut snapshot.transfers[index];
+    // Late socket/worker events cannot reopen or relabel a completed transfer.
+    if terminal(transfer.state) {
+        return None;
+    }
+    let previous = transfer.state;
+    if let Some(state) = message.state {
+        transfer.state = normalized_state(&state);
+    }
+    if let Some(meta) = message.meta {
+        if let Some(source) = meta.source {
+            transfer.device_name = source.name;
+        }
+        if let Some(pin) = meta.pin_code {
+            transfer.pin_code = Some(pin);
+        }
+        if let Some(files) = meta.files {
+            transfer.files = files;
+        }
+        transfer.total_bytes = meta.total_bytes;
+        transfer.transferred_bytes = meta.ack_bytes;
+    }
+    if let Some(transport) = message.transport {
+        transfer.transport = Some(transport);
+    }
+    if let Some(error) = message.error {
+        transfer.error = Some(error);
+        transfer.state = "failed";
+    }
+    if terminal(transfer.state) {
+        transfer.cancellation = None;
+    }
+    let notification = (previous != transfer.state
+        && (transfer.state == "waiting_acceptance" || terminal(transfer.state)))
+    .then(|| transfer.clone());
+    // Bound retained history; never discard an active request.
+    while snapshot.transfers.len() > 100 {
+        if let Some(index) = snapshot.transfers.iter().position(|t| terminal(t.state)) {
+            snapshot.transfers.remove(index);
+        } else {
+            break;
+        }
+    }
+    drop(snapshot);
+    shared.changed();
+    notification
+}
+
+async fn handle_device(shared: &Shared, event: EndpointInfo) {
+    let mut state = shared.state.write().await;
+    state.devices.retain(|d| d.id != event.id);
+    if event.present == Some(true) {
+        let transport = event.transport.unwrap_or_else(|| {
+            if event.id.starts_with("bt:") {
+                "bluetooth"
+            } else {
+                "lan"
+            }
+            .into()
+        });
+        state.devices.push(Device {
+            id: event.id,
+            name: event.name.unwrap_or_else(|| "Android".into()),
+            transport,
+        });
+    }
+    drop(state);
+    shared.changed();
+}
+
+async fn notify(connection: &zbus::Connection, transfer: &Transfer, config: &Path) -> Result<u32> {
+    let proxy = zbus::Proxy::new(
+        connection,
+        "org.freedesktop.Notifications",
+        "/org/freedesktop/Notifications",
+        "org.freedesktop.Notifications",
+    )
+    .await?;
+    let language = UiLanguage::load(config).await?;
+    let pending = transfer.state == "waiting_acceptance";
+    let title = if pending && transfer.direction == "outbound" {
+        language.text("Verify the PIN to send", "Verifica el PIN para enviar")
+    } else if pending {
+        language.text("Quick Share request", "Solicitud de Quick Share")
+    } else {
+        "Quick Share"
+    };
+    let mut body = format!(
+        "{} — {}",
+        transfer.device_name,
+        language.state(transfer.state)
+    );
+    if let Some(pin) = &transfer.pin_code {
+        body.push_str(&format!("\n{}: {pin}", language.text("Code", "Código")));
+    }
+    if pending {
+        body.push_str(language.text(
+            "\nConfirm that the code matches on both devices before accepting.",
+            "\nConfirma que el código coincide en ambos dispositivos antes de aceptar.",
+        ));
+    }
+    if let Some(error) = &transfer.error {
+        body.push_str(&format!("\n{error}"));
+    }
+    // Notification servers may interpret markup; escape untrusted peer names and errors.
+    let body = body
+        .replace('&', "&amp;")
+        .replace('<', "&lt;")
+        .replace('>', "&gt;");
+    let actions: &[&str] = match (language, pending) {
+        (UiLanguage::English, true) => &[
+            "default",
+            "Open",
+            "accept",
+            "Confirm PIN",
+            "reject",
+            "Reject",
+        ],
+        (UiLanguage::Spanish, true) => &[
+            "default",
+            "Abrir",
+            "accept",
+            "Confirmar PIN",
+            "reject",
+            "Rechazar",
+        ],
+        (UiLanguage::English, false) => &["default", "Open"],
+        (UiLanguage::Spanish, false) => &["default", "Abrir"],
+    };
+    let hints: BTreeMap<&str, zbus::zvariant::Value<'_>> = BTreeMap::new();
+    Ok(proxy
+        .call(
+            "Notify",
+            &(
+                "Quick Share",
+                0_u32,
+                "document-send",
+                title,
+                body,
+                actions,
+                hints,
+                if pending { 0_i32 } else { 5000_i32 },
+            ),
+        )
+        .await?)
+}
+
+pub async fn serve(port: u16, download: Option<PathBuf>, options: EngineOptions) -> Result<()> {
+    let preferences = Preferences::load()?;
+    let shell_config = BaseDirs::new()
+        .context("Cannot find the user's configuration directory")?
+        .config_dir()
+        .join("omarchy/shell.json");
+    let directory = download.unwrap_or(preferences.download_directory);
+    tokio::fs::create_dir_all(&directory).await?;
+    let directory = validate_directory(&directory).await?;
+    let mut engine = RQS::with_options(
+        Visibility::Invisible,
+        Some(port as u32),
+        Some(directory.clone()),
+        options.clone(),
+    );
+    let mut events = engine.message_sender.subscribe();
+    let (devices_tx, mut devices_rx) = broadcast::channel(64);
+    let (commands_tx, mut commands_rx) = mpsc::channel(32);
+    let (revisions, mut revision_rx) = watch::channel(0_u64);
+    let capabilities = local_capabilities(&options).await;
+    let shared = Arc::new(Shared {
+        state: RwLock::new(Snapshot {
+            version: 1,
+            visible: false,
+            visibility_expires_at: None,
+            network_consent: false,
+            instance_id: uuid::Uuid::new_v4().to_string(),
+            download_directory: directory.to_string_lossy().into_owned(),
+            devices: Vec::new(),
+            transfers: Vec::new(),
+            capabilities,
+            errors: Vec::new(),
+        }),
+        revisions,
+        commands: commands_tx,
+    });
+    // Acquire the session name before starting radio tasks, so a second instance cannot advertise.
+    let connection = zbus::connection::Builder::session()?
+        .name(BUS)?
+        .serve_at(PATH, Interface(shared.clone()))?
+        .build()
+        .await?;
+    let integration = match NautilusIntegration::new() {
+        Ok(integration) => integration,
+        Err(error) => {
+            shared.state.write().await.errors.push(format!(
+                "No se pudo iniciar la retirada automática del menú Nautilus: {error:#}"
+            ));
+            shared.changed();
+            None
+        }
+    };
+    let integration_monitor = async move {
+        match integration {
+            Some(integration) => integration.watch().await,
+            None => std::future::pending::<Result<()>>().await,
+        }
+    };
+    tokio::pin!(integration_monitor);
+    let mut integration_monitor_active = true;
+    let outgoing = engine.run().await?;
+    engine.discovery(devices_tx)?;
+    let signal_connection = connection.clone();
+    let signal_shared = shared.clone();
+    let publisher = tokio::spawn(async move {
+        while revision_rx.changed().await.is_ok() {
+            tokio::time::sleep(Duration::from_millis(100)).await;
+            revision_rx.borrow_and_update();
+            match signal_shared.snapshot().await {
+                Ok(snapshot) => {
+                    if let Err(error) = signal_connection
+                        .emit_signal(None::<&str>, PATH, INTERFACE, "Changed", &(snapshot,))
+                        .await
+                    {
+                        tracing::warn!(%error, "No se pudo emitir estado D-Bus");
+                    }
+                }
+                Err(error) => tracing::error!(%error, "No se pudo serializar estado"),
+            }
+        }
+    });
+    let mut expiry = tokio::time::interval(Duration::from_secs(1));
+    let mut notifications = BTreeMap::<u32, (String, u64, bool)>::new();
+    let notification_proxy = zbus::Proxy::new(
+        &connection,
+        "org.freedesktop.Notifications",
+        "/org/freedesktop/Notifications",
+        "org.freedesktop.Notifications",
+    )
+    .await?;
+    let mut actions = notification_proxy.receive_signal("ActionInvoked").await?;
+    let interrupt = tokio::signal::ctrl_c();
+    tokio::pin!(interrupt);
+    loop {
+        tokio::select! {
+            result = &mut integration_monitor, if integration_monitor_active => {
+                integration_monitor_active = false;
+                if let Err(error) = result {
+                    shared.state.write().await.errors.push(format!(
+                        "La retirada automática del menú Nautilus dejó de funcionar: {error:#}"
+                    ));
+                    shared.changed();
+                }
+            }
+            _ = &mut interrupt => break,
+            Some(operation) = commands_rx.recv() => {
+                let result = apply_operation(&shared, &mut engine, &outgoing, operation.command).await;
+                let _ = operation.reply.send(result);
+            }
+            event = events.recv() => match event {
+                Ok(event) => if let Some(transfer) = handle_message(&shared, event).await {
+                    match notify(&connection, &transfer, &shell_config).await {
+                        Ok(id) => {
+                            let pending = transfer.state == "waiting_acceptance";
+                            notifications.insert(id, (transfer.id, now() + if pending { 600 } else { 60 }, pending));
+                        }
+                        Err(error) => tracing::warn!(%error, "Notificaciones no disponibles"),
+                    }
+                },
+                Err(broadcast::error::RecvError::Lagged(count)) => {
+                    shared.state.write().await.errors.push(format!("Se perdieron {count} eventos del motor")); shared.changed();
+                }
+                Err(broadcast::error::RecvError::Closed) => break,
+            },
+            event = devices_rx.recv() => match event {
+                Ok(event) => handle_device(&shared, event).await,
+                Err(broadcast::error::RecvError::Lagged(count)) => {
+                    shared.state.write().await.errors.push(format!("Se perdieron {count} eventos de descubrimiento")); shared.changed();
+                }
+                Err(broadcast::error::RecvError::Closed) => break,
+            },
+            Some(action) = futures_util::StreamExt::next(&mut actions) => {
+                if let Ok((id, action)) = action.body().deserialize::<(u32, String)>() {
+                    if let Some((transfer, _, _)) = notifications.remove(&id) {
+                        if action == "default" {
+                            let payload = serde_json::json!({ "transfer_id": transfer }).to_string();
+                            tokio::spawn(async move {
+                                if let Err(error) = tokio::process::Command::new("omarchy-shell")
+                                    .args(["shell", "summon", "macondo.quickshare", &payload]).status().await {
+                                    tracing::warn!(%error, "No se pudo abrir el panel");
+                                }
+                            });
+                        } else if matches!(action.as_str(), "accept" | "reject") {
+                            if let Err(error) = apply_operation(&shared, &mut engine, &outgoing, Action::Respond(transfer, action == "accept")).await {
+                                tracing::warn!(%error, "Solicitud ya no disponible");
+                            }
+                        }
+                    }
+                }
+            },
+            _ = expiry.tick() => {
+                let expired = shared.state.read().await.visibility_expires_at.is_some_and(|deadline| now() >= deadline);
+                if expired { let _ = apply_operation(&shared, &mut engine, &outgoing, Action::Visibility(0)).await; }
+                let stale: Vec<u32> = {
+                    let state = shared.state.read().await;
+                    notifications.iter().filter_map(|(id, (transfer, deadline, pending))| {
+                        (now() >= *deadline || (*pending && !state.transfers.iter().any(|t| t.id == *transfer && t.state == "waiting_acceptance")))
+                            .then_some(*id)
+                    }).collect()
+                };
+                for id in stale {
+                    notifications.remove(&id);
+                    let _: zbus::Result<()> = notification_proxy.call("CloseNotification", &(id,)).await;
+                }
+            }
+        }
+    }
+    engine.stop().await;
+    publisher.abort();
+    Ok(())
+}
+
+async fn command_output(program: &str, args: &[&str]) -> Option<String> {
+    let output = tokio::process::Command::new(program)
+        .args(args)
+        .env("LC_ALL", "C")
+        .output()
+        .await
+        .ok()?;
+    output
+        .status
+        .success()
+        .then(|| String::from_utf8_lossy(&output.stdout).into_owned())
+}
+
+async fn local_capabilities(options: &EngineOptions) -> Capabilities {
+    let hotspot = command_output(
+        "nmcli",
+        &["-t", "-f", "WIFI-PROPERTIES.AP", "device", "show"],
+    )
+    .await
+    .is_some_and(|s| s.lines().any(|l| l.ends_with(":yes")));
+    let lan = command_output("nmcli", &["-t", "-f", "TYPE,STATE", "device"])
+        .await
+        .is_some_and(|s| {
+            s.lines()
+                .any(|l| l.starts_with("wifi:connected") || l.starts_with("ethernet:connected"))
+        });
+    Capabilities {
+        lan: options.lan && lan,
+        // The backend publishes readiness and withdrawal, not merely radio power.
+        bluetooth: false,
+        hotspot: options.hotspot && hotspot,
+    }
+}
+
+pub async fn doctor() -> Result<()> {
+    let mut result = BTreeMap::new();
+    for (name, program, args) in [
+        ("omarchy", "omarchy", vec!["version"]),
+        ("quickshell", "quickshell", vec!["--version"]),
+        ("bluez", "bluetoothctl", vec!["--version"]),
+        ("bluetooth", "btmgmt", vec!["info"]),
+        ("wifi", "iw", vec!["list"]),
+        (
+            "network_permissions",
+            "nmcli",
+            vec!["general", "permissions"],
+        ),
+        ("android_usb", "adb", vec!["devices", "-l"]),
+    ] {
+        result.insert(
+            name,
+            command_output(program, &args)
+                .await
+                .unwrap_or_else(|| "No disponible o acceso denegado".into()),
+        );
+    }
+    println!("{}", serde_json::to_string_pretty(&result)?);
+    Ok(())
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[tokio::test]
+    async fn socket_close_cannot_turn_completed_transfer_into_failure() {
+        let (revisions, _) = watch::channel(0);
+        let (commands, _) = mpsc::channel(1);
+        let shared = Shared {
+            state: RwLock::new(Snapshot {
+                version: 1,
+                visible: false,
+                visibility_expires_at: None,
+                network_consent: false,
+                instance_id: "test-instance".into(),
+                download_directory: "/tmp".into(),
+                devices: vec![],
+                transfers: vec![],
+                capabilities: Capabilities {
+                    lan: true,
+                    bluetooth: false,
+                    hotspot: false,
+                },
+                errors: vec![],
+            }),
+            revisions,
+            commands,
+        };
+        handle_message(
+            &shared,
+            ChannelMessage {
+                id: "session".into(),
+                direction: ChannelDirection::LibToFront,
+                state: Some(rqs_lib::State::WaitingForUserConsent),
+                transport: Some("bluetooth".into()),
+                ..Default::default()
+            },
+        )
+        .await;
+        handle_message(
+            &shared,
+            ChannelMessage {
+                id: "session".into(),
+                direction: ChannelDirection::LibToFront,
+                state: Some(rqs_lib::State::Finished),
+                ..Default::default()
+            },
+        )
+        .await;
+        handle_message(
+            &shared,
+            ChannelMessage {
+                id: "session".into(),
+                direction: ChannelDirection::LibToFront,
+                state: Some(rqs_lib::State::Disconnected),
+                error: Some("Connection closed after completion".into()),
+                ..Default::default()
+            },
+        )
+        .await;
+        let state = shared.state.read().await;
+        assert_eq!(state.transfers[0].state, "completed");
+        assert_eq!(state.transfers[0].transport.as_deref(), Some("bluetooth"));
+        assert_eq!(state.transfers[0].error, None);
+    }
+}

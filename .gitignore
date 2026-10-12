@@ -1,0 +1,9 @@
+/target/
+/dist/
+/vendor/rquickshare/core_lib/target/
+*.pkg.tar.*
+__pycache__/
+*.py[cod]
+.env
+.env.*
+!.env.example

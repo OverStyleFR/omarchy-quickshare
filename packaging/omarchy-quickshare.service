@@ -1,0 +1,19 @@
+[Unit]
+Description=Quick Share para Omarchy
+Documentation=https://github.com/Martichou/rquickshare
+After=graphical-session.target
+PartOf=graphical-session.target
+
+[Service]
+Type=dbus
+BusName=io.omarchy.QuickShare
+ExecStart=%h/.local/bin/omarchy-quickshare serve
+Restart=on-failure
+RestartSec=3
+KillSignal=SIGINT
+TimeoutStopSec=20
+UMask=0077
+NoNewPrivileges=yes
+
+[Install]
+WantedBy=graphical-session.target

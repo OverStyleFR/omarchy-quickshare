@@ -1,0 +1,42 @@
+name: CI
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: ci-${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  rust:
+    name: Build and deterministic tests
+    runs-on: ubuntu-24.04
+    timeout-minutes: 30
+    steps:
+      - name: Check out source
+        uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
+        with:
+          persist-credentials: false
+      - name: Install build dependencies
+        run: |
+          sudo apt-get update
+          sudo apt-get install --no-install-recommends libdbus-1-dev pkg-config protobuf-compiler
+      - name: Install stable Rust
+        run: rustup toolchain install stable --profile minimal
+      - name: Build locked workspace
+        run: cargo +stable build --workspace --locked
+      - name: Run deterministic tests
+        run: cargo +stable test --workspace --locked
+      - name: Check installer syntax
+        run: |
+          for script in scripts/*.sh packaging/PKGBUILD; do
+            bash -n "$script"
+          done
+      - name: Check Python extension syntax without importing desktop libraries
+        run: python3 -c 'import ast; from pathlib import Path; ast.parse(Path("nautilus/omarchy_quickshare.py").read_text())'

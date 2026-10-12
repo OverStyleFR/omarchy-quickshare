@@ -1,0 +1,33 @@
+name: Feature proposal
+description: Propose a focused improvement without silently reducing existing requirements.
+title: "[Feature]: "
+body:
+  - type: markdown
+    attributes:
+      value: |
+        Read the complete implementation plan and existing verification record before proposing changes. Unmet transport criteria remain in scope.
+        Do not include secrets, device identifiers, private files or vulnerability details; use SECURITY.md for security reports.
+  - type: textarea
+    id: problem
+    attributes:
+      label: User problem
+      description: Explain the actual need and who benefits, rather than only a preferred implementation.
+    validations:
+      required: true
+  - type: textarea
+    id: proposal
+    attributes:
+      label: Proposed behavior and acceptance
+      description: Describe observable outcomes, affected components and how native Android compatibility, consent and existing functionality are preserved.
+    validations:
+      required: true
+  - type: textarea
+    id: alternatives
+    attributes:
+      label: Alternatives and existing requirements
+      description: Link related requirements/issues. Explain whether this addresses an unmet criterion or adds separate scope; OBEX, manual LAN setup or a companion Android app are not silent replacements.
+  - type: textarea
+    id: evidence
+    attributes:
+      label: Supporting evidence
+      description: Public protocol references or redacted observations, clearly separating inference from verified behavior. Do not ask for repeated approved physical tests.

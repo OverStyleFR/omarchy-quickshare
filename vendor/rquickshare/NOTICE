@@ -1,0 +1,41 @@
+Omarchy Quick Share includes a modified rquickshare core.
+
+Original project: rquickshare by Martichou and its contributors.
+Source: https://github.com/Martichou/rquickshare
+Imported revision: 378d8ae969941bee4bf60ad34ac9cf8bb7005eb7
+Original license: GNU General Public License version 3, supplied in LICENSE.
+
+Modified for Omarchy Quick Share on 2026-10-09:
+- Replaced duplicate TCP-only handlers with a shared encrypted session.
+- Added Bluetooth discovery and RFCOMM streams, transport negotiation,
+  NetworkManager hotspot handling, consent and crash-state recovery.
+- Added bounded framing, authenticated message checks, safe staged file
+  publication, cancellation and transport/error events.
+- Removed the obsolete TypeScript export layer and standalone core binary.
+- Pinned mdns-sd to the exact Cargo.lock revision for reproducible builds.
+
+The Google-origin protobuf schemas preserve their Apache-2.0 headers.
+The modified offline_wire_formats.proto carries a change notice; the full
+license is supplied in LICENSE-APACHE. wire_format.proto instead preserves
+Copyright 2020 The Chromium Authors and its BSD-style header. Its license
+is supplied separately in LICENSE-CHROMIUM, obtained from the Chromium
+upstream LICENSE: https://raw.githubusercontent.com/chromium/chromium/main/LICENSE
+The schema itself is pinned by the imported rquickshare revision above.
+The modern IntroductionFrame metadata and ProgressUpdateFrame additions
+to wire_format.proto originate from Copyright 2023 Google LLC,
+Apache-2.0, supplied in LICENSE-APACHE. Source pinned at:
+https://github.com/google/nearby/blob/d128b5fca30b3fa8d4642f8c75dd9e314e090e74/sharing/proto/wire_format.proto
+The BandwidthUpgradeRetryFrame addition to offline_wire_formats.proto
+is from the same Google revision (Apache-2.0):
+https://github.com/google/nearby/blob/d128b5fca30b3fa8d4642f8c75dd9e314e090e74/connections/implementation/proto/offline_wire_formats.proto
+
+
+Protocol references include Google Nearby Connections (Apache-2.0):
+https://github.com/google/nearby
+Reference HEAD observed on 2026-10-09:
+2e9ff95062bd003555e4c11d9096adb859cfce72
+This is a reference revision, not a claim that the entire Google project
+was imported or that Android interoperability has been verified.
+
+No Rust code from rustdrop or SimpleNearby was incorporated: no license
+for their own Rust/source code was found during the audit.

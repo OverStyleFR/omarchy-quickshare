@@ -1,0 +1,48 @@
+name: Interoperability result
+description: Record a distinct native Android condition, positive or negative, without exposing private data.
+title: "[Interop]: "
+body:
+  - type: markdown
+    attributes:
+      value: |
+        Existing native sends/receives and UI approvals do not need repeating. This form records a distinct new condition or evidence obtained from existing files.
+        Never post verification codes, credentials, MAC/USB IDs, SSIDs, personal paths/filenames, location metadata or unredacted screenshots. Follow SECURITY.md for vulnerabilities.
+  - type: input
+    id: revision
+    attributes:
+      label: Repository version or commit
+    validations:
+      required: true
+  - type: textarea
+    id: equipment
+    attributes:
+      label: Non-identifying equipment and versions
+      description: Desktop/software versions and adapter family; Android model/version if available. Do not include serial numbers or addresses.
+    validations:
+      required: true
+  - type: textarea
+    id: criterion
+    attributes:
+      label: Distinct requirement or missing condition
+      description: Identify the implementation-plan criterion and explain why this is not a repeat of an approved basic test.
+    validations:
+      required: true
+  - type: textarea
+    id: setup
+    attributes:
+      label: Direction, radios, network and actual medium
+      description: State both devices' Wi-Fi/Bluetooth state, shared LAN/WAN conditions and how transport was observed. A backend flag is not proof of phone radio state.
+    validations:
+      required: true
+  - type: textarea
+    id: result
+    attributes:
+      label: Result and integrity boundary
+      description: Bytes/total, terminal state/error, publication/partial-file observations, SHA-256 method and what remains unverified. Do not call 0/0, a loopback peer, a valid media container or a round trip an independent Android hash.
+    validations:
+      required: true
+  - type: textarea
+    id: restoration
+    attributes:
+      label: Consent, cleanup and restoration
+      description: Record explicit user consent, retained connectivity, temporary-resource cleanup and evidence limitations. Manual remote deletion is not protocol cleanup; observer exit errors are not necessarily product failures.
