@@ -71,7 +71,7 @@ SDP/RFCOMM now start `connect` on the owned descriptor after deregistration and 
 
 After correction, native Omarchy → Android sent the **104-byte fixture over Bluetooth**, `completed`, no errors, with engine LAN/hotspot disabled. The code was presented and acceptance was not automated. User confirmed correct received files; independent hash of that Android destination remains unrecorded. Normal service restored, visibility off, capabilities available/errors empty, computer Wi-Fi retained. Do not ask the user to repeat the already approved visual inspection.
 
-### Both-device Wi-Fi off: native outgoing 64 MiB and independent hash approved
+### Both-device Wi-Fi off: native 64 MiB in both directions and independent integrity approved
 
 On 12 October 2026, native Omarchy → Android completed **67,108,864/67,108,864 bytes** with runtime transport **`bluetooth`**, `error: null` and engine `errors: []`. The user confirmed completion on the phone. This is a distinct large-outgoing/both-Wi-Fi-off condition, not another basic transfer to reconstruct earlier evidence.
 
@@ -79,7 +79,17 @@ The user switched phone Wi-Fi off; fresh subprocess observations verified comput
 
 Source SHA-256 before and after sending remained `b9e838f0fa17dd4b381a64b6ccc2056d9956e4f0046048f10abb58186cde9b8e`. After selecting USB File Transfer, the **newly received** Android copy was independently read through USB/MTP: **67,108,864 bytes**, the same SHA-256, and `cmp` exit 0 against the source. Its modification time was one second after the recorded transfer completion, identifying this new receive rather than an older LAN copy. No resend, rename, metadata edit or deletion was used to obtain equality. This outgoing large-file/both-Wi-Fi-off case is approved.
 
-After recording terminal evidence, computer Wi-Fi reconnected, the owned runtime-only isolation drop-in was removed and the normal installed service restored. LAN/Bluetooth/hotspot backends became available, visibility stayed off, no active transfers/errors remained, the safety timer was stopped and the configuration hash matched the lifecycle baseline. The observer did not change the source binary/persistent unit/preferences or edit/delete original and received files. The inverse both-Wi-Fi-off direction and remaining Bluetooth cancellation/disconnection cases are still open.
+After recording outgoing terminal evidence, computer Wi-Fi reconnected, the owned runtime-only isolation drop-in was removed and the normal installed service restored. LAN/Bluetooth/hotspot backends became available, visibility stayed off, no active transfers/errors remained, the safety timer was stopped and the configuration hash matched the lifecycle baseline. The observer did not change the source binary/persistent unit/preferences or edit/delete original and received files.
+
+#### Independent inverse reception
+
+Later on 12 October 2026, the phone sent its independently verified `grande-64MiB.bin` back through native Quick Share. Android → Omarchy completed **67,108,864/67,108,864 bytes** at **18:19:20 UTC**, runtime transport **`bluetooth`**, `error: null`, engine `errors: []`. The observer recorded authentication, local waiting-for-acceptance, data progress and completion without automating consent or storing the code. The user confirmed the phone had sent the file; explicit manual PIN comparison was not independently observed.
+
+The user confirmed phone Wi-Fi off. Computer Wi-Fi was observed off through progress and at completion, with the owned restoration timer still active; HTTPS bound to USB returned 200 after both radios were off. The original service ran temporary **`serve --no-lan --no-hotspot`**, with LAN/hotspot unavailable and Bluetooth ready, excluding the USB IP route from file transport.
+
+The existing PC fixture was preserved: the new published file was **`1_grande-64MiB.bin`**, mode **`0600`**, exactly **67,108,864 bytes**, with a new modification time at completion. Its SHA-256 was `b9e838f0fa17dd4b381a64b6ccc2056d9956e4f0046048f10abb58186cde9b8e`, matching the Android source independently read through USB/MTP earlier; `cmp` against the preserved PC reference exited 0. No new USB mode change, resend or payload modification was needed.
+
+Terminal evidence was saved before restoring Wi-Fi/restarting the daemon. The owned isolation file was removed, the normal installed service returned with all three backends ready, no errors/transfers and visibility off; the safety timer was stopped. Computer Wi-Fi connected and its exclusively bound HTTPS request returned 200; preferences retained their baseline hash. This closes the **64 MiB/both-Wi-Fi-off/both-direction integrity condition**, not the remaining Bluetooth cancellation/disconnection, outgoing-batch or negotiated hotspot matrix.
 
 ### Closed-panel native notification and independent photo hash
 
