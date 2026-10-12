@@ -4,13 +4,13 @@ Thank you for improving [Omarchy Quick Share](https://github.com/PuroDelphi/omar
 
 ## Start with the actual scope
 
-Read [README.md](README.md), the complete [implementation plan](IMPLEMENTATION_PLAN.md) and [verification record](docs/VERIFICATION.md) before proposing protocol or transport changes. Native Android Quick Share is required; OBEX, a companion Android app or LAN-only behavior cannot silently replace unmet criteria. Already approved native sends/receives, Nautilus single/multi-file use and UI cases should not be repeated merely to regenerate evidence.
+Read [README.md](README.md), the [architecture guide](docs/ARCHITECTURE.md) and [recorded verification](docs/VERIFICATION.md) before proposing protocol or transport changes. Preserve native Android Quick Share compatibility, explicit consent and file integrity; OBEX or a companion Android app is not an equivalent implementation.
 
 Open an issue for a substantive behavior/design change and describe the distinct condition addressed. Small focused fixes can go directly to a pull request. Do not post vulnerability details publicly; use SECURITY.md instead. English is the primary documentation language; the UI retains optional Spanish support.
 
 ## Development setup
 
-Use an Arch/Omarchy desktop for UI and lifecycle work. Dependencies are listed in README.md. The canonical plugin is the repository-root manifest/QML plus `nautilus/`; the Rust daemon is separate. Do not modify the installed Omarchy package's desktop files to develop this plugin.
+Use an Arch/Omarchy desktop for UI and lifecycle work. Dependencies and the native plugin/service lifecycle are in [Installation](docs/INSTALLATION.md). The canonical plugin is the repository-root manifest/QML plus `nautilus/`; the Rust daemon is separate. Do not modify the installed Omarchy package's desktop files to develop this plugin.
 
 ```bash
 cargo build --workspace --locked
@@ -20,7 +20,7 @@ omarchy plugin validate .
 
 Build and deterministic tests run in CI; local plugin validation requires the installed Omarchy CLI. Physical radio tests are consent-required and ignored by default; do not enable them automatically in CI or scan unfamiliar phones. Never run a second daemon alongside the installed service. Finish/cancel active transfers before installation or service replacement.
 
-For a release build, use `cargo build --release --locked --package omarchy-quickshare`; for a local Arch artifact, use `./scripts/build-package.sh`. Run source installation as the desktop user with `./scripts/install.sh`, or package setup with `omarchy-quickshare-setup` after installation. Installing only the root plugin is not sufficient to install its daemon.
+For a release build, use `cargo build --release --locked --package omarchy-quickshare`; for a local Arch artifact, use `./scripts/build-package.sh`. Install the Git plugin with the native Omarchy command and maintain its backend through the panel's service controls, as described in the installation guide.
 
 ## Implementation expectations
 
@@ -30,12 +30,12 @@ For a release build, use `cargo build --release --locked --package omarchy-quick
 - Keep the plugin theme-integrated; update English and Spanish strings together. Preserve unrelated inline shell settings when changing preferences.
 - Own only project resources; reject foreign destination/link collisions. Preserve downloads/configuration/preferences during lifecycle operations.
 - Add focused regression coverage for behavior changes, migrate affected callers and remove obsolete paths rather than add compatibility shims without need.
-- Update affected README/plan/verification documentation. Do not remove blocked criteria or recast a failed test as success.
+- Update affected user, architecture and verification documentation. Describe observed behavior accurately; do not recast a failed transfer as success.
 - Preserve pinned dependency provenance and notices. If dependencies change, update `Cargo.lock` and regenerate notices with `./scripts/update-notices.sh`.
 
 ## Evidence in pull requests
 
-Describe the problem, actual change, affected interfaces and checks **actually run**, including failures/not-run checks. For physical results, record direction, radio/network conditions, confirmed transport, size, state, relevant versions and integrity method. A stored Android copy independently read by USB/MTP or hashed locally is stronger evidence than a round trip. Obtain missing hashes from existing files where possible rather than ask for another approved basic send.
+Describe the problem, actual change, affected interfaces and checks **actually run**, including failures/not-run checks. For physical results, record direction, radio/network conditions, confirmed transport, size, state, relevant versions and integrity method. A stored Android copy independently read by USB/MTP or hashed locally is stronger evidence than a round trip. Reuse existing evidence where the changed behavior is unaffected.
 
 Never automate consent, publish verification codes/keys, manipulate radios without agreement or use manual Android deletion to claim protocol cleanup. Redact private filenames/paths, network identifiers, Bluetooth/USB device IDs and screenshots before upload. Keep location metadata/coordinates out of reports. Report observer failures separately from daemon failures.
 

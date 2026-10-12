@@ -1,110 +1,90 @@
 #!/usr/bin/env bash
 set -euo pipefail
-
-ROOT=$(realpath "$(dirname "${BASH_SOURCE[0]}")/..")
-CONFIG_HOME=${XDG_CONFIG_HOME:-$HOME/.config}
-DATA_HOME=${XDG_DATA_HOME:-$HOME/.local/share}
-PLUGIN_ID=macondo.quickshare
-PLUGIN_DIR="$CONFIG_HOME/omarchy/plugins/$PLUGIN_ID"
-NAUTILUS_TARGET="$PLUGIN_DIR/nautilus/omarchy_quickshare.py"
-NAUTILUS_EXTENSION="$DATA_HOME/nautilus-python/extensions/omarchy_quickshare.py"
-UNIT_DIR="$CONFIG_HOME/systemd/user"
-BINARY="$HOME/.local/bin/omarchy-quickshare"
-
-plugin_is_owned() {
-  [[ -f "$PLUGIN_DIR/.omarchy-quickshare-owned" ]] &&
-    cmp -s -- "$PLUGIN_DIR/.omarchy-quickshare-owned" <(printf 'omarchy-quickshare\n')
-}
-
-if (( EUID == 0 )); then
-  printf 'Instala como el usuario del escritorio, no como root.\n' >&2
-  exit 1
-fi
-if [[ -L "$PLUGIN_DIR" ]] || { [[ -e "$PLUGIN_DIR" ]] && ! plugin_is_owned; }; then
-  printf 'El destino ya existe y no pertenece a este instalador: %s\n' "$PLUGIN_DIR" >&2
-  exit 1
-fi
-if [[ -e "$NAUTILUS_EXTENSION" || -L "$NAUTILUS_EXTENSION" ]]; then
-  if [[ ! -L "$NAUTILUS_EXTENSION" || $(readlink -- "$NAUTILUS_EXTENSION") != "$NAUTILUS_TARGET" ]]; then
-    printf 'La extensión Nautilus ya existe y no pertenece a este instalador: %s\n' "$NAUTILUS_EXTENSION" >&2
-    exit 1
-  fi
-fi
-for command in cargo omarchy omarchy-shell systemctl install jq python nautilus cmp; do
-  command -v "$command" >/dev/null || { printf 'Falta %s\n' "$command" >&2; exit 1; }
-done
-python -c 'import gi; gi.require_version("Nautilus", "4.1"); gi.require_version("Gtk", "4.0"); from gi.repository import Nautilus, Gtk' || {
-  printf 'Instala nautilus, nautilus-python, python-gobject y gtk4 antes de continuar.\n' >&2
-  exit 1
-}
-[[ -f /usr/lib/nautilus/extensions-4/libnautilus-python.so ]] || {
-  printf 'Falta nautilus-python (libnautilus-python.so).\n' >&2
-  exit 1
-}
-
-omarchy plugin validate "$ROOT"
-# Cargo reports the actual artifact path, including custom target directories/targets.
-BUILT_BINARY=$(cargo build --manifest-path "$ROOT/Cargo.toml" --release --locked \
-  --package omarchy-quickshare --message-format=json-render-diagnostics |
-  jq -er 'select(.reason == "compiler-artifact" and .target.name == "omarchy-quickshare" and (.target.kind | index("bin")) != null) | .executable | select(. != null)')
-if systemctl --user is-active --quiet omarchy-quickshare.service; then
-  if ! "$BUILT_BINARY" status | jq -e 'all(.transfers[]; .state == "completed" or .state == "rejected" or .state == "cancelled" or .state == "failed")' >/dev/null; then
-    printf 'Termina o cancela las transferencias antes de actualizar.\n' >&2
-    exit 1
-  fi
-  systemctl --user stop omarchy-quickshare.service
-fi
-UPDATE=false
-[[ ! -d "$PLUGIN_DIR" ]] || UPDATE=true
-
-mkdir -p "$CONFIG_HOME/omarchy/plugins" "$UNIT_DIR" "$HOME/.local/bin"
-# Staging and backups must remain outside the shell's plugin registry.
-STAGE=$(mktemp -d "$CONFIG_HOME/omarchy/.quickshare-stage.XXXXXXXX")
+source "$(dirname "${BASH_SOURCE[0]}")/service-common.sh"
+ACTION=${1:-install}
+[[ $ACTION == install || $ACTION == update ]] || { printf 'Usage: %s [install|update]\n' "$0" >&2; exit 2; }
+initialize
+check_checkout
+check_resources
+check_nautilus
+check_idle
+MODE=source
+STAGE=$(mktemp -d "$STATE_DIR/.build.XXXXXXXX")
 trap 'rm -rf -- "$STAGE"' EXIT
-cp -a -- "$ROOT/manifest.json" "$ROOT/Service.qml" "$ROOT/BarWidget.qml" "$ROOT/Panel.qml" "$ROOT/nautilus" "$STAGE/"
-printf 'omarchy-quickshare\n' > "$STAGE/.omarchy-quickshare-owned"
-# The source is validated before replacing the plugin. Preserve the previous copy.
-if [[ -d "$PLUGIN_DIR" ]]; then
-  BACKUP="$CONFIG_HOME/omarchy/plugin-backups/$PLUGIN_ID.$(date +%s).$$"
-  mkdir -p "$(dirname "$BACKUP")"
-  mv -- "$PLUGIN_DIR" "$BACKUP"
-  printf 'Plugin anterior conservado: %s\n' "$BACKUP"
-fi
-mv -- "$STAGE" "$PLUGIN_DIR"
-trap - EXIT
-mkdir -p "$(dirname "$NAUTILUS_EXTENSION")"
-if [[ ! -e "$NAUTILUS_EXTENSION" && ! -L "$NAUTILUS_EXTENSION" ]]; then
-  ln -s -- "$NAUTILUS_TARGET" "$NAUTILUS_EXTENSION"
-elif [[ ! -L "$NAUTILUS_EXTENSION" || $(readlink -- "$NAUTILUS_EXTENSION") != "$NAUTILUS_TARGET" ]]; then
-  printf 'El registro Nautilus cambió durante la instalación: %s\n' "$NAUTILUS_EXTENSION" >&2
-  exit 1
-fi
-install -Dm755 "$BUILT_BINARY" "$BINARY"
-install -Dm644 "$ROOT/packaging/omarchy-quickshare.service" "$UNIT_DIR/omarchy-quickshare.service"
-install -Dm644 "$ROOT/packaging/local-binary.conf" "$UNIT_DIR/omarchy-quickshare.service.d/binary.conf"
-install -Dm644 "$ROOT/LICENSE" "$DATA_HOME/licenses/omarchy-quickshare/LICENSE"
-install -Dm644 "$ROOT/vendor/rquickshare/LICENSE" "$DATA_HOME/licenses/omarchy-quickshare/LICENSE-GPL"
-install -Dm644 "$ROOT/vendor/rquickshare/LICENSE-APACHE" "$DATA_HOME/licenses/omarchy-quickshare/LICENSE-APACHE"
-install -Dm644 "$ROOT/vendor/rquickshare/LICENSE-CHROMIUM" "$DATA_HOME/licenses/omarchy-quickshare/LICENSE-CHROMIUM"
-install -Dm644 "$ROOT/vendor/rquickshare/NOTICE" "$DATA_HOME/licenses/omarchy-quickshare/NOTICE"
-install -Dm644 "$ROOT/vendor/THIRD_PARTY_NOTICES.txt" "$DATA_HOME/licenses/omarchy-quickshare/THIRD_PARTY_NOTICES.txt"
-
-systemctl --user daemon-reload
-systemctl --user enable omarchy-quickshare.service
-systemctl --user restart omarchy-quickshare.service
-if $UPDATE; then
-  omarchy restart shell
-else
-  omarchy-shell shell rescanPlugins
-fi
-deadline=$((SECONDS + 15))
-until omarchy plugin list --json | jq -e --arg id "$PLUGIN_ID" 'any(.[]; .id == $id)' >/dev/null; do
-  if (( SECONDS >= deadline )); then
-    printf 'El shell no registró el plugin a tiempo; el servicio permanece instalado.\n' >&2
-    exit 1
+if package_installed; then
+  MODE=package
+  require_commands pacman vercmp
+  VERSION=$("$SYSTEM_BINARY" --version)
+  VERSION=${VERSION##* }
+  [[ $VERSION =~ ^[0-9]+\.[0-9]+\.[0-9]+$ ]] || fail 'Cannot determine the packaged backend version.' 'No se puede determinar la versión del servicio empaquetado.'
+  if [[ $ACTION == update || $(vercmp "$VERSION" 0.1.1) -lt 0 ]]; then
+    require_commands makepkg cargo rustc protoc pkg-config sudo
+    confirm \
+      'Build the current checkout and authorize sudo pacman -U for the Quick Share package? Shared dependencies will not be removed. [y/N]' \
+      '¿Compilar el checkout actual y autorizar sudo pacman -U para el paquete Quick Share? No se retirarán dependencias compartidas. [s/N]' || exit 2
+    QUICKSHARE_PACKAGE_OUTPUT="$STAGE/packages" bash "$ROOT/scripts/build-package.sh" --noconfirm
+    PACKAGES=("$STAGE/packages/"omarchy-quickshare-[0-9]*.pkg.tar.*)
+    [[ ${#PACKAGES[@]} == 1 && -f ${PACKAGES[0]} ]] || fail 'Expected exactly one Quick Share package artifact.' 'Se esperaba exactamente un paquete Quick Share compilado.'
+    check_resources
+    pause_service
+    sudo pacman -U -- "${PACKAGES[0]}"
+    VERSION=$("$SYSTEM_BINARY" --version)
+    VERSION=${VERSION##* }
+    [[ $VERSION == "$(jq -r .version "$ROOT/manifest.json")" ]] || fail 'Installed backend version does not match the checkout.' 'La versión del servicio instalado no coincide con el checkout.'
+  else
+    pause_service
   fi
-  sleep 0.2
-done
-omarchy plugin enable "$PLUGIN_ID"
-"$BINARY" status
-printf '\nInstalado. La visibilidad empieza desactivada; actívala temporalmente desde el panel.\n'
+  # A previous recorded source backend must not linger as a PATH shadow of the package.
+  if owned_file "$BINARY" "$STATE_DIR/binary.sha256"; then
+    rm -- "$BINARY"
+    rm -f -- "$STATE_DIR/binary.sha256"
+  fi
+  if [[ -f $BACKEND_DATA/.service-owned ]] && cmp -s "$BACKEND_DATA/.service-owned" <(printf 'omarchy-quickshare-service\n'); then
+    rm -rf -- "$BACKEND_DATA"
+  fi
+else
+  require_commands cargo rustc protoc pkg-config tar gzip
+  [[ -x /usr/bin/cargo && -x /usr/bin/rustc ]] || fail \
+    'Install the Arch rust and cargo packages before building the service.' \
+    'Instala los paquetes rust y cargo de Arch antes de compilar el servicio.'
+  if [[ $ACTION == update && ! -f $STATE_DIR/binary.sha256 ]]; then
+    fail 'No owned source service is installed. Choose Install service first.' 'No hay un servicio de código fuente propio instalado. Elige primero Instalar servicio.'
+  fi
+  say 'Building the locked Rust backend from this native plugin checkout…' 'Compilando el servicio Rust bloqueado de este plugin Git nativo…'
+  # Keep a reusable compiler cache outside the watched Git plugin checkout.
+  BUILD_CACHE="$STATE_DIR/build-cache"
+  if [[ -e $BUILD_CACHE || -L $BUILD_CACHE ]]; then
+    [[ -d $BUILD_CACHE && ! -L $BUILD_CACHE ]] &&
+      cmp -s "$BUILD_CACHE/.compiler-owned" <(printf 'omarchy-quickshare-build\n') ||
+      fail 'Compiler cache is not owned by this service.' 'La caché de compilación no pertenece a este servicio.'
+  else
+    install -d -m700 "$BUILD_CACHE"
+    printf 'omarchy-quickshare-build\n' > "$BUILD_CACHE/.compiler-owned"
+  fi
+  BUILT_BINARY=$(RUSTC=/usr/bin/rustc /usr/bin/cargo build --manifest-path "$ROOT/Cargo.toml" --target-dir "$BUILD_CACHE" --release --locked \
+    --package omarchy-quickshare --message-format=json-render-diagnostics |
+    jq -er 'select(.reason == "compiler-artifact" and .target.name == "omarchy-quickshare" and (.target.kind | index("bin")) != null) | .executable | select(. != null)')
+  [[ -x $BUILT_BINARY ]] || fail 'Cargo did not produce the backend executable.' 'Cargo no produjo el ejecutable del servicio.'
+  # Preserve matching GPL corresponding source alongside all notices, not a mutable Git URL alone.
+  tar --exclude=target --exclude=.git -czf "$STAGE/source.tar.gz" -C "$ROOT" \
+    Cargo.toml Cargo.lock src vendor scripts packaging manifest.json Service.qml BarWidget.qml Panel.qml nautilus LICENSE
+  check_resources
+  pause_service
+  install -Dm755 "$BUILT_BINARY" "$BINARY"
+  record_file "$BINARY" "$STATE_DIR/binary.sha256"
+  install -d -m700 "$BACKEND_DATA"
+  printf 'omarchy-quickshare-service\n' > "$BACKEND_DATA/.service-owned"
+  install -Dm644 "$STAGE/source.tar.gz" "$BACKEND_DATA/source/source.tar.gz"
+  install -Dm644 "$ROOT/LICENSE" "$BACKEND_DATA/licenses/LICENSE"
+  for NOTICE in LICENSE LICENSE-APACHE LICENSE-CHROMIUM NOTICE; do
+    DEST=$NOTICE
+    [[ $NOTICE != LICENSE ]] || DEST=LICENSE-GPL
+    install -Dm644 "$ROOT/vendor/rquickshare/$NOTICE" "$BACKEND_DATA/licenses/$DEST"
+  done
+  install -Dm644 "$ROOT/vendor/THIRD_PARTY_NOTICES.txt" "$BACKEND_DATA/licenses/THIRD_PARTY_NOTICES.txt"
+fi
+install_unit "$MODE"
+say 'Service installed and running. The native Git plugin, preferences and received files were left intact. Visibility starts off.' \
+  'Servicio instalado y activo. El plugin Git nativo, las preferencias y los archivos recibidos permanecen intactos. La visibilidad empieza desactivada.'
+say 'Nautilus: select one or several local files → Send via Quick Share. Reopen Nautilus if the menu has not loaded yet.' \
+  'Nautilus: selecciona uno o varios archivos locales → Enviar por Quick Share. Reabre Nautilus si el menú aún no aparece.'

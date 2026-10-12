@@ -1,10 +1,10 @@
 # Security Policy
 
-## Scope and support status
+## Scope
 
-Omarchy Quick Share is undergoing interoperability and security validation. No release is designated here as a guaranteed security-maintained version, and no audit or universal Android compatibility is claimed. Report against the current repository revision when possible; include the affected revision/version and component without exposing private data.
+Report suspected vulnerabilities against an identifiable version or repository revision. Include the affected component without exposing private data. This policy does not claim an external security audit or promise a response deadline.
 
-Relevant areas include key exchange/encryption, authentication/consent, malformed protocol inputs/resource limits, file-name/path handling, local D-Bus/session boundaries, temporary files, radio/network state restoration and installation ownership checks. Existing native empty-file and Android partial-cleanup limitations are recorded in [docs/VERIFICATION.md](docs/VERIFICATION.md); recording them does not waive acceptance criteria.
+Relevant areas include key exchange/encryption, authentication/consent, malformed protocol inputs/resource limits, file-name/path handling, local D-Bus/session boundaries, temporary files, radio/network state restoration and installation ownership checks. File publication and destination/cache boundaries are described in [Architecture](docs/ARCHITECTURE.md).
 
 ## Reporting a suspected vulnerability
 

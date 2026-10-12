@@ -1,11 +1,11 @@
 name: Feature proposal
-description: Propose a focused improvement without silently reducing existing requirements.
+description: Propose a focused improvement to Android file sharing or desktop integration.
 title: "[Feature]: "
 body:
   - type: markdown
     attributes:
       value: |
-        Read the complete implementation plan and existing verification record before proposing changes. Unmet transport criteria remain in scope.
+        Read docs/USER_GUIDE.md and docs/ARCHITECTURE.md before proposing changes.
         Do not include secrets, device identifiers, private files or vulnerability details; use SECURITY.md for security reports.
   - type: textarea
     id: problem
@@ -25,7 +25,7 @@ body:
     id: alternatives
     attributes:
       label: Alternatives and existing requirements
-      description: Link related requirements/issues. Explain whether this addresses an unmet criterion or adds separate scope; OBEX, manual LAN setup or a companion Android app are not silent replacements.
+      description: Link related issues and explain alternative approaches. Preserve native Android Quick Share, consent and file integrity.
   - type: textarea
     id: evidence
     attributes:

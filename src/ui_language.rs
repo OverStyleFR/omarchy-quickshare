@@ -69,7 +69,7 @@ fn optional_text<'de, D: Deserializer<'de>>(
 }
 
 impl UiLanguage {
-    fn from_config(contents: &[u8]) -> Result<Self> {
+    fn configured_language(contents: &[u8]) -> Result<Option<Self>> {
         let config: ShellConfig<'_> = serde_json::from_slice(contents)
             .context("Cannot read the Omarchy interface language preference")?;
         let entry = config
@@ -81,20 +81,34 @@ impl UiLanguage {
             .chain(&config.bar.layout.right)
             .chain(&config.plugins)
             .find(|entry| entry.id.as_deref() == Some("macondo.quickshare"));
-        Ok(
-            if entry.and_then(|entry| entry.language.as_deref()) == Some("es") {
-                Self::Spanish
-            } else {
-                Self::English
-            },
-        )
+        Ok(match entry.and_then(|entry| entry.language.as_deref()) {
+            Some("es") => Some(Self::Spanish),
+            Some("en") => Some(Self::English),
+            _ => None,
+        })
+    }
+    #[cfg(test)]
+    fn from_config(contents: &[u8]) -> Result<Self> {
+        Ok(Self::configured_language(contents)?.unwrap_or(Self::English))
     }
 
     pub(crate) async fn load(path: &Path) -> Result<Self> {
         match tokio::fs::read(path).await {
-            Ok(contents) => Self::from_config(&contents),
+            Ok(contents) => {
+                if let Some(language) = Self::configured_language(&contents)? {
+                    return Ok(language);
+                }
+            }
+            Err(error) if error.kind() == std::io::ErrorKind::NotFound => {}
+            Err(error) => return Err(error).context("Cannot read the Omarchy shell preferences"),
+        }
+        let directories = directories::BaseDirs::new()
+            .context("Cannot locate the persistent language preference")?;
+        match tokio::fs::read(directories.config_dir().join("omarchy-quickshare/language")).await {
+            Ok(contents) if contents == b"es\n" || contents == b"es" => Ok(Self::Spanish),
+            Ok(_) => Ok(Self::English),
             Err(error) if error.kind() == std::io::ErrorKind::NotFound => Ok(Self::English),
-            Err(error) => Err(error).context("Cannot read the Omarchy shell preferences"),
+            Err(error) => Err(error).context("Cannot read the persistent language preference"),
         }
     }
 
@@ -143,6 +157,11 @@ mod tests {
             UiLanguage::from_config(
                 br#"{"plugins":[{"id":"macondo.qu\u0069ckshare","language":"\u0065s"}]}"#
             )?,
+            UiLanguage::Spanish
+        );
+        assert_eq!(
+            UiLanguage::configured_language(br#"{"plugins":[{"id":"macondo.quickshare"}]}"#,)?
+                .unwrap_or(UiLanguage::Spanish),
             UiLanguage::Spanish
         );
         Ok(())

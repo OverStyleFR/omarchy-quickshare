@@ -1,7 +1,7 @@
 use crate::ui_language::UiLanguage;
 use crate::{integration::NautilusIntegration, BUS, INTERFACE, PATH};
 use anyhow::{bail, Context, Result};
-use directories::{BaseDirs, ProjectDirs, UserDirs};
+use directories::{ProjectDirs, UserDirs};
 use rqs_lib::channel::{ChannelAction, ChannelDirection, ChannelMessage};
 use rqs_lib::{EndpointInfo, EngineOptions, OutboundPayload, SendInfo, Visibility, RQS};
 use serde::{Deserialize, Serialize};
@@ -613,10 +613,10 @@ async fn notify(connection: &zbus::Connection, transfer: &Transfer, config: &Pat
 
 pub async fn serve(port: u16, download: Option<PathBuf>, options: EngineOptions) -> Result<()> {
     let preferences = Preferences::load()?;
-    let shell_config = BaseDirs::new()
-        .context("Cannot find the user's configuration directory")?
-        .config_dir()
-        .join("omarchy/shell.json");
+    let shell_config = UserDirs::new()
+        .context("Cannot find the user's home directory")?
+        .home_dir()
+        .join(".config/omarchy/shell.json");
     let directory = download.unwrap_or(preferences.download_directory);
     tokio::fs::create_dir_all(&directory).await?;
     let directory = validate_directory(&directory).await?;

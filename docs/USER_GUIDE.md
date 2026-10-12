@@ -1,0 +1,95 @@
+# User guide
+
+[Back to Quick Share](../README.md) · [Installation](INSTALLATION.md) · [Architecture and CLI](ARCHITECTURE.md)
+
+Omarchy Quick Share connects your desktop to Android's existing Quick Share. The phone does not need a companion application. The desktop panel uses Omarchy's theme and supports English and Español.
+
+## Before sharing
+
+- Complete **Install service** from the panel and wait for **Ready**.
+- Keep Bluetooth enabled for Bluetooth discovery and transfers. A compatible shared local network provides the LAN file route.
+- Unlock the phone so you can handle its Quick Share prompt.
+- The **receiving** device must be visible. The **sending** device chooses files and a destination.
+
+Transport availability depends on the radio, network and permissions. The transfer card reports the medium actually in use; a capability label alone is not a completed transfer.
+
+## Phone sends, Omarchy receives
+
+1. On the PC, open the Quick Share panel.
+2. Select **Receive for 120 s**. The bar shows the remaining visibility time.
+3. On the phone, open the file and choose **Share**.
+4. Choose **Quick Share** in Android's share menu.
+5. Select the displayed computer.
+6. Compare the code shown on both devices.
+7. On the PC, accept only if the code matches and the offered files are expected.
+
+You can reject an unwanted offer. Incoming notifications work with the panel closed; open the request to inspect it and handle consent.
+
+Visibility is temporary. Its expiry stops new discovery offers, not an already established file transfer.
+
+## Omarchy sends, phone receives
+
+1. On the phone, open Quick Share in **Receive** mode.
+2. On the PC, open the panel and choose one or more files.
+3. Select the phone from nearby devices. If exactly one destination is available it is preselected; multiple destinations require a choice.
+4. Press **Send**.
+5. Compare the verification code on both devices.
+6. Approve the request on each device when prompted.
+
+A manually selected destination that disappears is cleared, not replaced with another device. A preloaded file selection never starts sending by itself.
+
+### From Nautilus
+
+Select one or multiple local files, right-click and choose **Send via Quick Share**. This opens the panel with the exact selection; you still control the destination, Send and consent.
+
+Folders, remote URLs and mixed unsupported selections do not offer this action. Spaces and Unicode names are supported. The extension accepts up to 1,000 local files per selection.
+
+After installing or updating the Python extension, save work in all Nautilus windows and restart Nautilus. Opening another window in the same process does not reload extensions.
+
+## Progress, cancellation and results
+
+Cards show byte progress, the active transport and the terminal result. Use **Cancel** to stop an active transfer. Closing the panel does not cancel it, and the Rust service continues independently of the shell.
+
+**Cancelling…** indicates a request in progress, not fabricated completion. A disconnected peer produces a failed transfer rather than a completed file.
+
+Omarchy stages incoming files privately and publishes them only after completion. Existing files are not overwritten: a duplicate name receives a numeric prefix. Local staged partials are removed on cancellation or failure. Android manages its own destination/cache cleanup; sender cancellation does not provide a remote-file deletion command.
+
+## Language and destination
+
+Choose **English** or **Español** in the panel. This controls the panel, bar, file-manager action and new project notifications. File names, device names and technical errors remain unchanged.
+
+Choose an existing absolute download directory in the panel. The initial destination is Downloads. Do not use a destination that you cannot write or that lacks space for the offered files.
+
+## Network permissions
+
+Local LAN data uses TCP and mDNS discovery. Bluetooth data uses Classic RFCOMM, with BLE/GATT metadata for discovery.
+
+The advanced **Allow interrupting my Wi-Fi for a direct connection** setting grants permission for a temporary network change. Leave it off unless you intend that interruption. Permission does not itself establish a direct route. This project does not advertise Wi-Fi Direct/P2P, Google contacts-only visibility, account integration or lossless transfer resume.
+
+Use trusted local networks. Do not expose the service with router port forwarding or disable the firewall globally.
+
+## Troubleshooting
+
+### The computer does not appear on the phone
+
+Make sure the PC's **Receive for 120 s** visibility is active. On the phone, use the file's **Share → Quick Share** flow when sending; phone Receive mode is for the opposite direction.
+
+Keep the required radio enabled and grant Android's nearby-device permissions. Check the panel's service state and any explicit error before changing network settings.
+
+### The phone does not appear on the PC
+
+Open Quick Share **Receive** mode on the phone. Refresh the PC's nearby-device list. Do not confuse Bluetooth discovery with file data: the completed card identifies the transport actually used.
+
+### The Nautilus menu is absent
+
+Ensure service setup installed the extension and `nautilus-python`. Restart Nautilus after saving work. The action is offered for local regular files, not folders or remote/mixed selections.
+
+### A zero-byte file is rejected
+
+Android Quick Share can reject an empty file offer. The project does not silently ZIP it, add bytes or alter its contents to pretend that an unchanged empty-file transfer succeeded.
+
+### Service setup or maintenance fails
+
+Read the setup terminal's error, then consult [Installation and maintenance](INSTALLATION.md). Do not start a second daemon alongside the installed session service. Finish or explicitly cancel transfers before updating or removing it.
+
+For diagnostics, use the panel's service information, `omarchy-quickshare doctor`, `omarchy-quickshare status` and the systemd user journal. Redact codes, credentials, addresses, personal paths and location data before sharing reports. See [Security](../SECURITY.md) for private vulnerability reporting.

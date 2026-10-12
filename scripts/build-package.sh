@@ -1,9 +1,14 @@
 #!/usr/bin/env bash
 set -euo pipefail
 ROOT=$(realpath "$(dirname "${BASH_SOURCE[0]}")/..")
-WORK=$(mktemp -d)
+# Rust package builds can exceed a memory-backed /tmp quota.
+# Honor an explicit TMPDIR; otherwise use the user's disk-backed cache.
+WORK_BASE=${TMPDIR:-${XDG_CACHE_HOME:-$HOME/.cache}}
+mkdir -p -- "$WORK_BASE"
+WORK=$(mktemp -d "$WORK_BASE/omarchy-quickshare-package.XXXXXXXX")
 trap 'rm -rf -- "$WORK"' EXIT
-VERSION=0.1.0
+VERSION=0.1.1
+OUTPUT_DIR=${QUICKSHARE_PACKAGE_OUTPUT:-$ROOT/dist}
 command -v makepkg >/dev/null || { printf 'Falta makepkg.\n' >&2; exit 1; }
 [[ -f "$ROOT/Cargo.lock" ]] || { printf 'Falta Cargo.lock; genera y verifica primero la compilación.\n' >&2; exit 1; }
 
@@ -13,7 +18,7 @@ LC_ALL=C tar --sort=name --mtime="@${SOURCE_DATE_EPOCH:-0}" --owner=0 --group=0 
   --format=gnu -cf - \
   --exclude='target' --exclude='bindings' --exclude='.git' \
   --transform="s,^,omarchy-quickshare-$VERSION/," \
-  -C "$ROOT" Cargo.toml Cargo.lock src vendor manifest.json Service.qml BarWidget.qml Panel.qml nautilus packaging scripts LICENSE README.md preview.png IMPLEMENTATION_PLAN.md CONTRIBUTING.md CODE_OF_CONDUCT.md SECURITY.md docs |
+  -C "$ROOT" Cargo.toml Cargo.lock src vendor manifest.json Service.qml BarWidget.qml Panel.qml nautilus packaging scripts LICENSE README.md preview.png CONTRIBUTING.md CODE_OF_CONDUCT.md SECURITY.md docs |
   gzip -n > "$WORK/omarchy-quickshare-$VERSION.tar.gz"
 SOURCE_CHECKSUM=$(sha256sum "$WORK/omarchy-quickshare-$VERSION.tar.gz")
 SOURCE_CHECKSUM=${SOURCE_CHECKSUM%% *}
@@ -30,11 +35,11 @@ done < "$ROOT/packaging/PKGBUILD" > "$WORK/PKGBUILD"
   cd "$WORK"
   makepkg --cleanbuild "$@"
 )
-SOURCE_DIR="$ROOT/dist/source/omarchy-quickshare-$VERSION"
+SOURCE_DIR="$OUTPUT_DIR/source/omarchy-quickshare-$VERSION"
 mkdir -p "$SOURCE_DIR"
 install -m644 "$WORK/PKGBUILD" "$WORK/omarchy-quickshare-$VERSION.tar.gz" "$SOURCE_DIR/"
 for package in "$WORK"/*.pkg.tar.*; do
   [[ -f "$package" ]] || continue
-  install -m644 "$package" "$ROOT/dist/"
+  install -Dm644 "$package" "$OUTPUT_DIR/$(basename "$package")"
 done
-printf 'Paquetes construidos en %s/dist; fuente y PKGBUILD con SHA-256 en %s\n' "$ROOT" "$SOURCE_DIR"
+printf 'Packages built in %s; corresponding source and checksummed PKGBUILD in %s\n' "$OUTPUT_DIR" "$SOURCE_DIR"

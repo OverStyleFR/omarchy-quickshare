@@ -5,11 +5,11 @@ use std::os::fd::{AsRawFd, FromRawFd, OwnedFd};
 use std::os::unix::ffi::OsStrExt;
 use std::path::{Path, PathBuf};
 
-// The native Omarchy remover has no uninstall hook. Watch its registry in the
-// existing service, so removal also unregisters Nautilus when it is not running.
+// The native Omarchy remover has no uninstall hook. Reconcile only this exact
+// Nautilus link when the native manifest/extension disappears.
 pub(crate) struct NautilusIntegration {
     events: tokio::io::unix::AsyncFd<OwnedFd>,
-    marker: PathBuf,
+    manifest: PathBuf,
     registration: PathBuf,
     target: PathBuf,
 }
@@ -17,10 +17,7 @@ pub(crate) struct NautilusIntegration {
 impl NautilusIntegration {
     pub(crate) fn new() -> Result<Option<Self>> {
         let home = std::env::var_os("HOME").context("HOME no está definido")?;
-        let config = std::env::var_os("XDG_CONFIG_HOME")
-            .filter(|value| !value.is_empty())
-            .map(PathBuf::from)
-            .unwrap_or_else(|| PathBuf::from(&home).join(".config"));
+        let config = PathBuf::from(&home).join(".config");
         let data = std::env::var_os("XDG_DATA_HOME")
             .filter(|value| !value.is_empty())
             .map(PathBuf::from)
@@ -28,8 +25,8 @@ impl NautilusIntegration {
         let plugin = config.join("omarchy/plugins/macondo.quickshare");
         let registration = data.join("nautilus-python/extensions/omarchy_quickshare.py");
         let target = plugin.join("nautilus/omarchy_quickshare.py");
-        let marker = plugin.join(".omarchy-quickshare-owned");
-        Self::unregister_if_removed(&marker, &registration, &target)?;
+        let manifest = plugin.join("manifest.json");
+        Self::unregister_if_removed(&manifest, &registration, &target)?;
         let parent = plugin.parent().context("Registro de plugins no válido")?;
         if !parent.is_dir() {
             return Ok(None);
@@ -64,26 +61,30 @@ impl NautilusIntegration {
         }
         let integration = Self {
             events: tokio::io::unix::AsyncFd::new(descriptor)?,
-            marker,
+            manifest,
             registration,
             target,
         };
         // Reconcile after subscribing to close the startup/removal race.
         Self::unregister_if_removed(
-            &integration.marker,
+            &integration.manifest,
             &integration.registration,
             &integration.target,
         )?;
         Ok(Some(integration))
     }
 
-    fn unregister_if_removed(marker: &Path, registration: &Path, target: &Path) -> Result<()> {
-        let mut expected = [0_u8; b"omarchy-quickshare\n".len()];
-        let mut extra = [0_u8; 1];
-        let owned = std::fs::File::open(marker).is_ok_and(|mut file| {
-            file.read_exact(&mut expected).is_ok()
-                && expected == *b"omarchy-quickshare\n"
-                && matches!(file.read(&mut extra), Ok(0))
+    fn unregister_if_removed(manifest: &Path, registration: &Path, target: &Path) -> Result<()> {
+        #[derive(serde::Deserialize)]
+        struct Manifest<'a> {
+            #[serde(borrow)]
+            id: &'a str,
+        }
+        let owned = std::fs::File::open(manifest).is_ok_and(|mut file| {
+            let mut contents = Vec::new();
+            file.read_to_end(&mut contents).is_ok()
+                && serde_json::from_slice::<Manifest<'_>>(&contents)
+                    .is_ok_and(|manifest| manifest.id == "macondo.quickshare")
         });
         if owned && target.is_file() {
             return Ok(());
@@ -121,7 +122,7 @@ impl NautilusIntegration {
                 }
             }) {
                 Ok(Ok(_)) => {
-                    Self::unregister_if_removed(&self.marker, &self.registration, &self.target)?
+                    Self::unregister_if_removed(&self.manifest, &self.registration, &self.target)?
                 }
                 Ok(Err(error)) if error.kind() == std::io::ErrorKind::Interrupted => {}
                 Ok(Err(error)) => return Err(error.into()),
@@ -145,28 +146,28 @@ mod tests {
         let plugin = root.join("plugins/macondo.quickshare");
         let target = plugin.join("nautilus/omarchy_quickshare.py");
         let registration = root.join("extensions/omarchy_quickshare.py");
-        let marker = plugin.join(".omarchy-quickshare-owned");
+        let manifest = plugin.join("manifest.json");
         std::fs::create_dir_all(target.parent().unwrap()).unwrap();
         std::fs::create_dir_all(registration.parent().unwrap()).unwrap();
-        std::fs::write(&marker, b"omarchy-quickshare\n").unwrap();
+        std::fs::write(&manifest, br#"{"id":"macondo.quickshare"}"#).unwrap();
         std::fs::write(&target, b"extension").unwrap();
         symlink(&target, &registration).unwrap();
-        NautilusIntegration::unregister_if_removed(&marker, &registration, &target).unwrap();
+        NautilusIntegration::unregister_if_removed(&manifest, &registration, &target).unwrap();
         assert_eq!(std::fs::read_link(&registration).unwrap(), target);
 
         std::fs::rename(&plugin, root.join("plugins/.macondo.quickshare.bak")).unwrap();
-        NautilusIntegration::unregister_if_removed(&marker, &registration, &target).unwrap();
+        NautilusIntegration::unregister_if_removed(&manifest, &registration, &target).unwrap();
         assert!(!registration.is_symlink());
-        NautilusIntegration::unregister_if_removed(&marker, &registration, &target).unwrap();
+        NautilusIntegration::unregister_if_removed(&manifest, &registration, &target).unwrap();
 
         let foreign = root.join("foreign.py");
         std::fs::write(&foreign, b"foreign extension").unwrap();
         symlink(&foreign, &registration).unwrap();
-        NautilusIntegration::unregister_if_removed(&marker, &registration, &target).unwrap();
+        NautilusIntegration::unregister_if_removed(&manifest, &registration, &target).unwrap();
         assert_eq!(std::fs::read_link(&registration).unwrap(), foreign);
         std::fs::remove_file(&registration).unwrap();
         std::fs::write(&registration, b"foreign regular file").unwrap();
-        NautilusIntegration::unregister_if_removed(&marker, &registration, &target).unwrap();
+        NautilusIntegration::unregister_if_removed(&manifest, &registration, &target).unwrap();
         assert_eq!(
             std::fs::read(&registration).unwrap(),
             b"foreign regular file"

@@ -1,47 +1,59 @@
 #!/usr/bin/env bash
 set -euo pipefail
-
-CONFIG_HOME=${XDG_CONFIG_HOME:-$HOME/.config}
-DATA_HOME=${XDG_DATA_HOME:-$HOME/.local/share}
-PLUGIN_DIR="$CONFIG_HOME/omarchy/plugins/macondo.quickshare"
-NAUTILUS_TARGET="$PLUGIN_DIR/nautilus/omarchy_quickshare.py"
-NAUTILUS_EXTENSION="$DATA_HOME/nautilus-python/extensions/omarchy_quickshare.py"
-
-plugin_is_owned() {
-  [[ -f "$PLUGIN_DIR/.omarchy-quickshare-owned" ]] &&
-    cmp -s -- "$PLUGIN_DIR/.omarchy-quickshare-owned" <(printf 'omarchy-quickshare\n')
-}
-if (( EUID == 0 )); then
-  printf 'Ejecuta como el usuario del escritorio, no como root.\n' >&2
-  exit 1
+source "$(dirname "${BASH_SOURCE[0]}")/service-common.sh"
+initialize
+check_checkout
+check_resources
+check_idle
+PACKAGE=false
+package_installed && PACKAGE=true
+confirm \
+  'Remove the Quick Share service and Nautilus action? The native Git plugin, preferences and received files will stay. [y/N]' \
+  '¿Retirar el servicio Quick Share y la acción Nautilus? Se conservarán el plugin Git nativo, las preferencias y los archivos recibidos. [s/N]' || exit 2
+REMOVE_PACKAGE=false
+if $PACKAGE; then
+  require_commands sudo
+  if confirm \
+    'Also authorize sudo pacman -R omarchy-quickshare to remove the installed package (not shared dependencies)? Choose No to keep the package disabled. [y/N]' \
+    '¿Autorizar también sudo pacman -R omarchy-quickshare para retirar el paquete instalado (sin dependencias compartidas)? Elige No para conservar el paquete desactivado. [s/N]'; then
+    REMOVE_PACKAGE=true
+  fi
 fi
-if [[ -L "$PLUGIN_DIR" ]] || { [[ -e "$PLUGIN_DIR" ]] && ! plugin_is_owned; }; then
-  printf 'No se retirará un plugin ajeno al instalador: %s\n' "$PLUGIN_DIR" >&2
-  exit 1
-fi
-if [[ ${1:-} != --yes ]]; then
-  printf 'Retirar servicio, binario y plugin propios; conservar configuración y descargas. ¿Continuar? [s/N] '
-  read -r answer
-  [[ "$answer" == s || "$answer" == S ]] || exit 0
-fi
-# Preserve inline preferences in shell.json: native disable removes the entire
-# layout entry, including its language. Restarting after removing the owned
-# plugin unloads its widget and IPC without deleting the saved settings.
-systemctl --user disable --now omarchy-quickshare.service
-if [[ -L "$NAUTILUS_EXTENSION" && $(readlink -- "$NAUTILUS_EXTENSION") == "$NAUTILUS_TARGET" ]]; then
-  rm -f -- "$NAUTILUS_EXTENSION"
-fi
-if plugin_is_owned; then
-  rm -rf -- "$PLUGIN_DIR"
-fi
-rm -f -- "$CONFIG_HOME/systemd/user/omarchy-quickshare.service" "$HOME/.local/bin/omarchy-quickshare"
-rm -f -- "$CONFIG_HOME/systemd/user/omarchy-quickshare.service.d/binary.conf"
-rm -f -- "$DATA_HOME/licenses/omarchy-quickshare/LICENSE"
-rm -f -- "$DATA_HOME/licenses/omarchy-quickshare/LICENSE-GPL"
-rm -f -- "$DATA_HOME/licenses/omarchy-quickshare/LICENSE-APACHE"
-rm -f -- "$DATA_HOME/licenses/omarchy-quickshare/LICENSE-CHROMIUM"
-rm -f -- "$DATA_HOME/licenses/omarchy-quickshare/NOTICE"
-rm -f -- "$DATA_HOME/licenses/omarchy-quickshare/THIRD_PARTY_NOTICES.txt"
+check_resources
+preserve_language
+pause_service
+systemctl --user disable omarchy-quickshare.service
+# Keep an owned mask while authorizing package removal, and permanently only
+# if the user chooses to retain the package. Install service clears that mask.
+if [[ -e $UNIT && ! -L $UNIT ]]; then rm -- "$UNIT"; fi
+if [[ ! -L $UNIT ]]; then ln -s /dev/null "$UNIT"; fi
 systemctl --user daemon-reload
-omarchy restart shell
-printf 'Retirado. Configuración, descargas y copias anteriores del plugin conservadas.\n'
+if $REMOVE_PACKAGE; then
+  sudo pacman -R -- omarchy-quickshare
+  if package_installed; then fail 'Package removal did not complete; the service remains disabled.' 'La retirada del paquete no terminó; el servicio sigue desactivado.'; fi
+fi
+if [[ -L $NAUTILUS_EXTENSION && $(readlink "$NAUTILUS_EXTENSION") == "$NAUTILUS_TARGET" ]]; then rm -- "$NAUTILUS_EXTENSION"; fi
+if [[ -f $DROPIN ]]; then rm -- "$DROPIN"; fi
+if owned_file "$BINARY" "$STATE_DIR/binary.sha256"; then rm -- "$BINARY"; fi
+if [[ -f $BACKEND_DATA/.service-owned ]] && cmp -s "$BACKEND_DATA/.service-owned" <(printf 'omarchy-quickshare-service\n'); then rm -rf -- "$BACKEND_DATA"; fi
+if [[ -d "$STATE_DIR/build-cache" && ! -L "$STATE_DIR/build-cache" ]] &&
+  cmp -s "$STATE_DIR/build-cache/.compiler-owned" <(printf 'omarchy-quickshare-build\n'); then
+  rm -rf -- "$STATE_DIR/build-cache"
+fi
+rm -f -- "$STATE_DIR/unit.sha256" "$STATE_DIR/dropin.sha256" "$STATE_DIR/binary.sha256"
+printf 'disabled\n' > "$STATE_DIR/mode"
+if ! $PACKAGE || $REMOVE_PACKAGE; then
+  if [[ -L $UNIT && $(readlink "$UNIT") == /dev/null ]]; then rm -- "$UNIT"; fi
+fi
+systemctl --user daemon-reload
+if $PACKAGE && ! $REMOVE_PACKAGE; then
+  say 'Service disabled and Nautilus action removed. The system package is retained, NOT uninstalled. Install service can enable it again.' \
+    'Servicio desactivado y acción Nautilus retirada. El paquete del sistema se conserva, NO está desinstalado. Instalar servicio puede habilitarlo de nuevo.'
+  printf 'retained\n' > "$STATE_DIR/removal-result"
+else
+  say 'Backend removed and Nautilus action unregistered. Preferences, downloads and the native Git plugin are preserved.' \
+    'Servicio retirado y acción Nautilus eliminada. Se conservan preferencias, descargas y el plugin Git nativo.'
+  printf 'removed\n' > "$STATE_DIR/removal-result"
+fi
+say 'To remove the widget/checkout, now run: omarchy plugin remove macondo.quickshare' \
+  'Para retirar el widget/checkout, ejecuta ahora: omarchy plugin remove macondo.quickshare'

@@ -16,8 +16,10 @@ class OmarchyQuickShare(GObject.GObject, Nautilus.MenuProvider):
         super().__init__()
         config = Path(os.environ.get("XDG_CONFIG_HOME") or Path.home() / ".config")
         data = Path(os.environ.get("XDG_DATA_HOME") or Path.home() / ".local/share")
-        self._shell_config = config / "omarchy/shell.json"
-        self._plugin = config / "omarchy/plugins/macondo.quickshare"
+        self._shell_config = Path.home() / ".config/omarchy/shell.json"
+        self._language_preference = config / "omarchy-quickshare/language"
+        self._disabled = Path(os.environ.get("XDG_STATE_HOME") or Path.home() / ".local/state") / "omarchy-quickshare/service/disabled"
+        self._plugin = Path.home() / ".config/omarchy/plugins/macondo.quickshare"
         self._target = self._plugin / "nautilus/omarchy_quickshare.py"
         self._registration = data / "nautilus-python/extensions/omarchy_quickshare.py"
         self._monitors = []
@@ -48,10 +50,14 @@ class OmarchyQuickShare(GObject.GObject, Nautilus.MenuProvider):
             ]
             for entry in entries:
                 if isinstance(entry, dict) and entry.get("id") == "macondo.quickshare":
-                    return spanish if entry.get("language") == "es" else english
+                    if entry.get("language") in ("en", "es"):
+                        return spanish if entry["language"] == "es" else english
         except (OSError, ValueError, AttributeError, TypeError):
-            pass  # Missing preferences use the plugin's English default.
-        return english
+            pass
+        try:
+            return spanish if self._language_preference.read_text().strip() == "es" else english
+        except OSError:
+            return english
 
     def _registered(self):
         if self._watch_error is not None:
@@ -60,11 +66,11 @@ class OmarchyQuickShare(GObject.GObject, Nautilus.MenuProvider):
             return (
                 self._registration.is_symlink()
                 and os.readlink(self._registration) == str(self._target)
-                and (self._plugin / ".omarchy-quickshare-owned").read_bytes()
-                == b"omarchy-quickshare\n"
+                and json.loads((self._plugin / "manifest.json").read_text()).get("id")
+                == "macondo.quickshare"
                 and self._target.is_file()
             )
-        except OSError:
+        except (OSError, ValueError, AttributeError):
             return False
 
     def _integration_changed(self, monitor, file, other_file, event):
@@ -108,8 +114,11 @@ class OmarchyQuickShare(GObject.GObject, Nautilus.MenuProvider):
         if not self._registered():
             self._show_error(self._tr("The Quick Share integration is no longer installed.", "La integración Quick Share ya no está instalada."))
             return
+        if self._disabled.exists():
+            self._show_error(self._tr("The service is disabled. Use Install service in the Quick Share panel.", "El servicio está desactivado. Usa Instalar servicio en el panel Quick Share."))
+            return
         local_binary = Path.home() / ".local/bin/omarchy-quickshare"
-        binary = str(local_binary) if os.access(local_binary, os.X_OK) else "/usr/bin/omarchy-quickshare"
+        binary = "/usr/bin/omarchy-quickshare" if os.access("/usr/bin/omarchy-quickshare", os.X_OK) else str(local_binary)
         try:
             process = Gio.Subprocess.new(
                 [binary, "share", "--", *paths],

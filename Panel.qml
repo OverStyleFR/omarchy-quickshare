@@ -239,7 +239,7 @@ Ui.Panel {
             Layout.fillWidth: true
             title: "Quick Share"
             meta: root.tr("Android file sharing", "Compartir archivos con Android")
-            detail: root.connected ? root.tr("Ready", "Listo") : root.tr("Offline", "Sin conexión")
+            detail: root.connected ? root.tr("Ready", "Listo") : service && service.serviceDisabled ? root.tr("Service disabled", "Servicio desactivado") : service && !service.backendInstalled ? root.tr("Setup required", "Requiere instalación") : service && !service.backendCompatible ? root.tr("Service update required", "Requiere actualizar el servicio") : root.tr("Service unavailable", "Servicio no disponible")
             foreground: root.foreground
             iconOpacity: root.connected ? 1 : 0.5
             iconComponent: Ui.BorderSurface {
@@ -274,7 +274,7 @@ Ui.Panel {
           }
           BodyText {
             visible: !root.connected
-            text: root.tr("Reconnecting to the service. You can choose files now; sending and approval will be available once it reconnects.", "Reconectando al servicio. Puedes elegir archivos; el envío y la autorización estarán disponibles cuando vuelva.")
+            text: service && service.setupBusy ? root.tr("Complete the maintenance action in the Omarchy terminal, then return here.", "Completa el mantenimiento en la terminal de Omarchy y vuelve aquí.") : service && service.serviceDisabled ? root.tr("The service is disabled. Install service enables it again without changing preferences or received files.", "El servicio está desactivado. Instalar servicio lo habilita de nuevo sin cambiar preferencias ni archivos recibidos.") : service && service.backendInstalled && !service.backendCompatible ? root.tr("Update the older service for native Git plugin support. Install service opens the authorized upgrade terminal.", "Actualiza el servicio anterior para usar el plugin Git nativo. Instalar servicio abre la terminal de actualización autorizada.") : root.tr("Install service to set up or repair the backend. Sharing remains unavailable until the service connects.", "Instala el servicio para configurar o reparar el motor. Compartir no estará disponible hasta conectar el servicio.")
             color: root.dim
             font.pixelSize: Style.font.bodySmall
           }
@@ -306,8 +306,40 @@ Ui.Panel {
               iconText: "󰑐"
               tooltipText: root.tr("Refresh status and devices", "Actualizar estado y dispositivos")
               Accessible.name: tooltipText
-              enabled: service && !service.busy
+              enabled: !!service
               onClicked: service.refresh()
+            }
+          }
+          SectionCard {
+            visible: !root.connected || root.settingsExpanded
+            BodyText { text: root.tr("Service", "Servicio"); font.bold: true }
+            BodyText {
+              visible: service && service.setupMessage !== ""
+              text: service ? service.setupMessage : ""
+              font.pixelSize: Style.font.bodySmall
+            }
+            BodyText {
+              text: service && service.activeTransfers ? root.tr("Finish or cancel active transfers before maintenance.", "Termina o cancela las transferencias activas antes del mantenimiento.") : root.tr("Maintenance opens an Omarchy terminal for authorization. The native plugin checkout stays intact.", "El mantenimiento abre una terminal de Omarchy para autorizarlo. El checkout Git del plugin permanece intacto.")
+              color: root.dim
+              font.pixelSize: Style.font.bodySmall
+            }
+            ActionButton {
+              Layout.fillWidth: true
+              text: root.tr("Install service", "Instalar servicio")
+              enabled: service && !service.busy && !service.activeTransfers
+              onClicked: service.runSetup("install")
+            }
+            ActionButton {
+              Layout.fillWidth: true
+              text: root.tr("Update service", "Actualizar servicio")
+              enabled: service && service.backendInstalled && !service.busy && !service.activeTransfers
+              onClicked: service.runSetup("update")
+            }
+            ActionButton {
+              Layout.fillWidth: true
+              text: root.tr("Remove service", "Retirar servicio")
+              enabled: service && service.backendInstalled && !service.busy && !service.activeTransfers
+              onClicked: service.runSetup("remove")
             }
           }
           Flow {

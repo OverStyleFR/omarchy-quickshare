@@ -5,7 +5,7 @@ body:
   - type: markdown
     attributes:
       value: |
-        Existing native sends/receives and UI approvals do not need repeating. This form records a distinct new condition or evidence obtained from existing files.
+        Record a native Android Quick Share interoperability result with reproducible steps and observed outcomes.
         Never post verification codes, credentials, MAC/USB IDs, SSIDs, personal paths/filenames, location metadata or unredacted screenshots. Follow SECURITY.md for vulnerabilities.
   - type: input
     id: revision
@@ -23,8 +23,8 @@ body:
   - type: textarea
     id: criterion
     attributes:
-      label: Distinct requirement or missing condition
-      description: Identify the implementation-plan criterion and explain why this is not a repeat of an approved basic test.
+      label: Sharing scenario
+      description: Describe the observed native Android sharing behavior and the relevant network or radio conditions.
     validations:
       required: true
   - type: textarea
@@ -38,7 +38,7 @@ body:
     id: result
     attributes:
       label: Result and integrity boundary
-      description: Bytes/total, terminal state/error, publication/partial-file observations, SHA-256 method and what remains unverified. Do not call 0/0, a loopback peer, a valid media container or a round trip an independent Android hash.
+      description: Bytes/total, terminal state/error, publication/partial-file observations and SHA-256 method. Keep claims within the observed evidence; a round trip or a valid media container alone is not an independent Android hash.
     validations:
       required: true
   - type: textarea

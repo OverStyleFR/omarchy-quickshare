@@ -2,7 +2,7 @@
   "schemaVersion": 1,
   "id": "macondo.quickshare",
   "name": "Quick Share",
-  "version": "0.1.0",
+  "version": "0.1.1",
   "author": "Jhonny Suarez - PuroDelphi",
   "description": "Share files with Android using the Quick Share user service",
   "license": "MIT",
