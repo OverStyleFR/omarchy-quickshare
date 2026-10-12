@@ -213,7 +213,7 @@ This is the target policy, not a guarantee Android permits every negotiation ord
 9. Install browser integration with both source/package setup, register only an owned user resource and reject foreign file/link collisions.
 10. Remove browser integration through the project uninstaller and native `omarchy plugin remove`, even with Nautilus closed. Check install/update/remove/reinstall preserving files/preferences and leaving no functional menu after removal. Document that native removal itself deletes inline preferences; the project uninstaller preserves them.
 
-**Output:** R10 through a complete installation lifecycle. Real package lifecycle is recorded; fresh-session automatic startup remains unverified.
+**Output:** R10 through a complete installation lifecycle. **Current approval:** source/package install/remove/reinstall, published-package update and automatic startup after a real reboot/new graphical login are recorded. Preferences, configuration and recorded received-file metadata were retained; Phase 9/R10 is approved for the observed desktop.
 
 ### Phase 10 — Final validation and delivery
 
@@ -267,9 +267,9 @@ Record results when observed: direction, radio/network conditions, confirmed med
 | Conflicting destination | Existing name, unwritable/full destination | No silent overwrite/directory escape; explicit result | Existing-name preservation approved; unwritable/full physical cases open. |
 | Cancel/disconnect | Real transfer in progress | Coherent state, resources released, managed partials | LAN cancel both directions approved; physical cutoff detected but Android partial cleanup failed. Other scenarios open. |
 | Shell reload | Transfer active | Daemon continues, plugin restores state/real medium | Native 64 MiB LAN and independent Android hash/visual recovery approved. |
-| Installation cycle | Install, fresh login, update, uninstall | Functional integration; system/user files preserved | Source/package install/remove/reinstall verified; fresh-session automatic start open. |
+| Installation cycle | Install, fresh login, update, uninstall | Functional integration; system/user files preserved | Source/package install/remove/reinstall, update to `0.1.0-4` and automatic startup after a real reboot/new graphical login approved; preferences/configuration and recorded received-file metadata preserved. |
 
-See [docs/VERIFICATION.md](docs/VERIFICATION.md) for complete historical positives, failures, corrections, evidence boundaries and camera metadata/hash mismatch. R8 approval does not close R5/R6/R7/R10 or remote cleanup.
+See [docs/VERIFICATION.md](docs/VERIFICATION.md) for complete historical positives, failures, corrections, evidence boundaries and camera metadata/hash mismatch. R8 and R10 approval does not close R5/R6/R7 or remote cleanup.
 
 ## 6. Order and completion criterion
 

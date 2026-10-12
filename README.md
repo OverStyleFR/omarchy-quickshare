@@ -21,7 +21,7 @@ This is a working integration with **incomplete transport and compatibility vali
 | Desktop integration | Native consent/notification with panel closed, Nautilus single/multi-file sends, LAN cancel/reject and active shell reload approved. English/Spanish preference persistence verified. |
 | Routerless Wi-Fi | NetworkManager hotspot creation/restoration tested locally; native Android negotiation and bidirectional files remain unvalidated. |
 | Known negatives | Native empty-file send failed. Android retained a public partial after an abrupt radio disconnection; remote cleanup is not approved. |
-| Lifecycle | Source removal and real Arch package install/remove/reinstall tested; automatic startup in a fresh graphical session remains unverified. |
+| Lifecycle | Source/package install, update, remove/reinstall and automatic startup after a real reboot/new graphical login verified; Spanish, configuration and recorded received-file metadata preserved. |
 
 The complete requirements, phases and acceptance matrix remain in [IMPLEMENTATION_PLAN.md](IMPLEMENTATION_PLAN.md). Detailed positive and negative evidence is in [docs/VERIFICATION.md](docs/VERIFICATION.md). Already approved basic transfers and UI cases do not need repeating merely because documentation changes.
 

@@ -1,6 +1,6 @@
 # Verification Record
 
-This English record consolidates the original README and implementation-plan history. It preserves approved cases, earlier failures, corrections and genuine blockers while omitting private device/session identifiers, personal filenames, network identifiers, paths and private artifact links. It is historical evidence, **not a new verification run** of the publication changes.
+This English record consolidates the original README and implementation-plan history together with subsequent publication and lifecycle checks. It preserves approved cases, earlier failures, corrections and genuine blockers while omitting private device/session identifiers, personal filenames, network identifiers, paths and private artifact links. Each observation is limited to its recorded scope.
 
 The full scope and acceptance matrix are in [IMPLEMENTATION_PLAN.md](../IMPLEMENTATION_PLAN.md). Basic native sending/receiving, the approved UI and Nautilus cases must not be repeated just to reconstruct a receipt. Missing independent hashes can be obtained from existing files; a new physical test must identify a distinct unmet condition.
 
@@ -12,7 +12,7 @@ The full scope and acceptance matrix are in [IMPLEMENTATION_PLAN.md](../IMPLEMEN
 - Normal operation uses native Android Quick Share, not OBEX or a custom Android application. The phone user's confirmations are retained as content/arrival evidence, not substituted for SHA-256.
 - The computer stayed connected to Wi-Fi during documented Bluetooth isolation and most physical checks. Backend LAN/hotspot disable flags isolate the engine, not both devices' radio state.
 - PIN comparison/acceptance/cancellation remained manual. No verification code or credential is published here.
-- Source and package lifecycle observations predate this repository layout/branding cutover. Installed package baseline was `0.1.0-2`, using `/usr/bin/omarchy-quickshare`; the previous source executable was removed.
+- Earlier source/package lifecycle observations used installed package `0.1.0-2`. The published layout/branding update to `0.1.0-4` and subsequent real reboot/new-login startup were also verified, using `/usr/bin/omarchy-quickshare`; the previous source executable remains absent.
 
 ## 1. Native LAN files and non-overwrite
 
@@ -157,7 +157,17 @@ Real Arch package install, administrative `pacman -R`, reinstall and corrected r
 
 Corrected uninstall/reinstall preserved the full inline JSON/Spanish, witness file and `settings.toml` bytes/mode/owner/mtime, and preexisting Downloads metadata. Nautilus registration returned, normal service active, no transfers, capabilities available. Package supplies `omarchy-quickshare-uninstall` without a checkout. Native Omarchy removal deletes inline preferences; preference preservation belongs to the project uninstaller.
 
-**Fresh graphical-session automatic startup remains unobserved.** Restarting the service or shell is not a substitute. Root-layout and branding checks are recorded below.
+### Published-package upgrade and real automatic startup: approved
+
+The owner authorized installation of `0.1.0-4` and ran its installed setup locally. The installed client reached the real user service; Spanish and the owned Nautilus link remained intact. The native panel displayed **Ready / Listo** and **Powered by Jhonny Suarez - PuroDelphi**.
+
+The subsequent observation had a **different Linux boot identity** and a new graphical-login timestamp. Before invoking the CLI or opening the panel, passive `systemctl --user show` reported the service **active/running/enabled**, executing `/usr/bin/omarchy-quickshare serve`, with a new process and invocation. It started at the same second as `graphical-session.target`; no manual service start, restart or setup was performed after return. This is actual reboot/new-login evidence, not a shell-reload substitute or a lingering old daemon.
+
+The installed CLI then reached a new engine instance, visibility off, zero transfers, `errors: []`, and LAN/Bluetooth/hotspot backend availability. Opening the real Spanish panel did not change the passively observed service process/invocation. Computer Wi-Fi was connected; no native Android transfer was repeated.
+
+Configuration bytes/hash, size, mode, owner and mtime matched the prior lifecycle receipt. All **23** previously recorded received-file entries retained size, mode, owner and mtime; the only missing entry was the deliberately removed owned lifecycle witness already recorded as cleanup. These file checks are metadata preservation, not a new full-file hash certification.
+
+**Phase 9/R10 is approved for the observed desktop**, combining the earlier administrative install/remove/reinstall checks with this published-package upgrade, real automatic startup, native panel and retained data/preferences. This does not approve untested transports, universal Android compatibility or remote partial cleanup.
 
 ## 7. Local development evidence and remaining matrix
 
@@ -171,7 +181,6 @@ Distinct unmet criteria retained in the plan:
 - Both devices' Wi-Fi disabled, native Bluetooth both-way integrity and remaining cancel/disconnect conditions.
 - Controlled mDNS block, client isolation, WAN-off and both-device Bluetooth-off LAN dependency.
 - Unwritable/full destination physical behavior and remaining equipment/version coverage.
-- Fresh-session daemon auto-start and cutover lifecycle validation.
 - Native empty-file failure, public Android partial after abrupt cutoff, and unmatched full camera-video hash remain explicitly unapproved.
 - Independent Android hashes still missing for particular historical fixtures can be read from existing copies; do not manufacture another basic send to compensate for documentation gaps.
 
@@ -186,6 +195,6 @@ No universal hardware/version claim, marketplace approval, lossless resume or co
 - Official marketplace tooling at revision `2b49af8e6fbc24ea25ad8ac6a54b3d55f09b4364` accepted that public snapshot. Its complete static baseline reported **zero findings** and **review-required** for installer, privilege, remote-build, package-manager and service-management capabilities. This is not a security audit or marketplace approval; later commits require their own exact-commit validation.
 - **Powered by Jhonny Suarez - PuroDelphi** was observed on the real native English and Spanish panel. It sits below the hero so transfers do not hide it below the fold. The English `preview.png` is an actual idle Wayland capture, not a mockup; it excludes peer names, paths, filenames and PINs. The user's Spanish preference was restored.
 - Reloading the shell to deploy the layout kept the existing daemon instance, no active transfers and `errors: []`. The owned Nautilus registration remained intact. No approved basic Android transfer was repeated.
-- An updated package was built locally, but administrative upgrade could not proceed through this tool session: `pkexec` could not create its textual authentication agent and `sudo -n` required a password. No authorization policy was weakened. System package `0.1.0-2` remains installed; current QML resources are deployed in the owned user plugin with the previous plugin preserved outside the registry.
+- Administrative upgrade initially could not proceed through this tool session: `pkexec` could not create its textual authentication agent and `sudo -n` required a password. No authorization policy was weakened. The owner subsequently authorized installation of `0.1.0-4` locally; its update and real automatic startup are approved in Section 6.
 
 The repository needs the marketplace's **manual-setup** classification because its external backend and Nautilus registration are not installed by Omarchy's native Git plugin installer. No submission issue was created: the official AI submission policy requires the owner to inspect and explicitly approve the final title, body and checklist first. Publication in the catalog additionally requires a curator's exact-commit review.
