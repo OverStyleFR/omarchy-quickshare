@@ -99,7 +99,17 @@ The engine ran temporary **`serve --no-lan --no-hotspot`**, with Bluetooth ready
 
 After terminal cancellation, the destination contained neither the offered filename/collision variants nor any **`.omarchy-quickshare-*.partial`** staging file. The observer did not delete files to obtain that result. The existing original and successful 64 MiB receive still matched their SHA-256 baselines. Terminal evidence was saved before removing the owned runtime isolation and restarting the normal service: all three backends ready, no errors/transfers, visibility off, preferences unchanged and computer-Wi-Fi-bound HTTPS 200.
 
-This approves **incoming native Bluetooth active-data cancellation and local non-publication/staging cleanup**. It does not approve outgoing Android partial cleanup, abrupt Bluetooth cutoff or click-count behavior without direct observation.
+This approves **incoming native Bluetooth active-data cancellation and local non-publication/staging cleanup**. That cancellation run does not by itself establish outgoing Android partial cleanup, physical Bluetooth cutoff or click-count behavior without direct observation; the separate incoming cutoff case follows.
+
+### Native inbound Bluetooth cutoff: explicit failure and no partial publication
+
+On 12 October 2026, the user confirmed sending a video from the phone to Omarchy and **disabling phone Bluetooth during data transfer**. The actual terminal snapshot reported **`failed`**, runtime transport **`bluetooth`**, **2,035,440/36,372,062 bytes**, and **`Connection reset by peer (os error 104)`**. Engine `errors: []`; the file was not falsely marked complete. The service's recorded execution was **`serve --no-lan --no-hotspot`**, excluding IP file routes while computer Wi-Fi remained available.
+
+Terminal evidence was captured before restarting the daemon. No continuous pre-cut progress observer was running for this attempt: the evidence is the real terminal byte count/state/transport, user confirmation of the physical cutoff, actual isolated execution and destination checks. No new HCI capture or independently observed PIN comparison is claimed. An earlier paused setup with no transfer and a transient advertising error is not substituted for this completed active-data cutoff condition.
+
+The destination contained neither the offered video/collision variants nor **`.omarchy-quickshare-*.partial`** staging. No file was deleted by the observer to obtain cleanup. The preserved original and successful 64 MiB receive retained their SHA-256 baselines. Removing only the owned runtime override restored normal installed execution, all three backends ready, visibility off and no transfers/errors; preferences were unchanged and computer-Wi-Fi-bound HTTPS returned 200.
+
+This approves **incoming native Bluetooth physical cutoff detection, explicit failure and local staging rollback**. It does not approve outgoing Android partial cleanup, automatic retry/reconnection or negotiated transport fallback.
 
 ### Closed-panel native notification and independent photo hash
 
@@ -208,7 +218,7 @@ Local NetworkManager created a real WPA2 AP, then explicitly removed temporary p
 Distinct unmet criteria retained in the plan:
 
 - Native routerless Wi-Fi negotiation, both-way files and network restoration/abnormal cleanup.
-- Remaining native Bluetooth outgoing cancellation, disconnection and outgoing-batch conditions. Incoming active-data cancellation/cleanup and the 64 MiB/both-devices-Wi-Fi-off/both-direction integrity condition above are approved; do not repeat them.
+- Remaining native Bluetooth outgoing cancellation/disconnection and outgoing-batch conditions. Incoming active-data cancellation, physical phone-Bluetooth cutoff/cleanup and the 64 MiB/both-devices-Wi-Fi-off/both-direction integrity condition above are approved; do not repeat them.
 - Controlled mDNS block, client isolation, WAN-off and both-device Bluetooth-off LAN dependency.
 - Unwritable/full destination physical behavior and remaining equipment/version coverage.
 - Native empty-file failure, public Android partial after abrupt cutoff, and unmatched full camera-video hash remain explicitly unapproved.
