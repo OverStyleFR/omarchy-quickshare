@@ -134,3 +134,40 @@ bash "$HOME/.config/omarchy/plugins/macondo.quickshare/scripts/setup-service.sh"
 Actions are `install`, `update` and `remove`; language can be `en` or `es`. This is backend maintenance, not another plugin installer. Source builds use Arch's `/usr/bin/cargo` and `/usr/bin/rustc` so an inactive toolchain shim does not select a different compiler; the owned build cache is outside the watched plugin checkout.
 
 Package builds use the user's cache rather than memory-backed `/tmp` by default and remove their temporary work directory when finished. An explicit `TMPDIR` takes precedence; choose a filesystem with enough space for the Rust build.
+
+## Alpha channel
+
+The `alpha` branch is an experimental QML channel for opt-in transfer animations. It uses the same plugin ID and the unchanged **0.1.2** backend; it is not a marketplace release and does not run a second daemon. Finish or cancel active transfers before backend maintenance. Keep local code edits committed or separately backed up; the commands below do not force or discard modifications.
+
+For an existing native Git installation:
+
+```bash
+plugin="$HOME/.config/omarchy/plugins/macondo.quickshare"
+git -C "$plugin" fetch origin alpha
+git -C "$plugin" switch --track origin/alpha
+omarchy restart shell
+```
+
+If the local `alpha` branch already exists, use `git -C "$plugin" switch alpha` instead. If the panel requires a backend update, use **Install service** or **Update service** through its authorized terminal before sharing files. After saving work, reopen Nautilus so its loaded extension uses the private file-selection interface.
+
+Open **Settings → Alpha transfer effects** to opt in. The preparation/send/receive previews last eight seconds and perform no transfer or network action. Live transfers take priority over previews.
+
+### Update alpha
+
+The installed Omarchy plugin updater fetches the remote default branch (`origin HEAD`), not the currently selected experimental branch. While intentionally testing alpha, update that branch explicitly:
+
+```bash
+git -C "$plugin" fetch origin alpha
+git -C "$plugin" merge --ff-only origin/alpha
+omarchy restart shell
+```
+
+### Return to stable
+
+```bash
+git -C "$plugin" switch main
+omarchy plugin update macondo.quickshare --yes
+omarchy restart shell
+```
+
+The stable UI ignores the animation preference. Configuration, language and received files remain in their existing locations; the stable 0.1.2 backend need not be downgraded.

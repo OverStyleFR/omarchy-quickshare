@@ -7,6 +7,15 @@ Item {
   property var shell: null
   property QtObject panelBar: null
   property Item panelAnchor: null
+  property var effectsAnchorWindow: null
+  property var effectsPreview: null
+  property bool savedTransferEffects: false
+  property bool effectsPreferenceLoaded: false
+  property bool effectsPreferenceWriting: false
+  property var effectsPreferenceIssue: null
+  readonly property bool transferEffectsEnabled: typeof entrySettings.transferEffectsEnabled === "boolean" ? entrySettings.transferEffectsEnabled : savedTransferEffects
+  readonly property var transferEffectsRenderer: effectsLoader.item
+  readonly property string effectsPreferenceError: effectsPreferenceIssue ? tr(effectsPreferenceIssue.en, effectsPreferenceIssue.es) + (effectsPreferenceIssue.detail ? "\n" + effectsPreferenceIssue.detail : "") : ""
   property var manifest: null
   property var snapshot: null
   property bool online: false
@@ -52,7 +61,7 @@ Item {
   readonly property string backendErrors: snapshot ? (snapshot.errors || []).map(function(e) {
     return typeof e === "string" ? e : JSON.stringify(e)
   }).join("\n") : ""
-  readonly property string errorText: [localError, !online && backendInstalled && backendCompatible && !serviceDisabled && !setupBusy ? (watchError || tr("Service unavailable. Use Install service to repair setup, or review its terminal output.", "Servicio no disponible. Usa Instalar servicio para reparar la instalación o revisa su terminal.")) : "", online ? watchError : "", backendErrors !== dismissedBackendErrors ? backendErrors : ""].filter(function(s) { return s.length > 0 }).join("\n")
+  readonly property string errorText: [localError, effectsPreferenceError, !online && backendInstalled && backendCompatible && !serviceDisabled && !setupBusy ? (watchError || tr("Service unavailable. Use Install service to repair setup, or review its terminal output.", "Servicio no disponible. Usa Instalar servicio para reparar la instalación o revisa su terminal.")) : "", online ? watchError : "", backendErrors !== dismissedBackendErrors ? backendErrors : ""].filter(function(s) { return s.length > 0 }).join("\n")
 
   function tr(en, es) { return language === "es" ? es : en }
   function fail(en, es, detail) { localIssue = { en: en, es: es, detail: detail || "" } }
@@ -63,6 +72,8 @@ Item {
       var entries = (layout.left || []).concat(layout.center || [], layout.right || [], config.plugins || [])
       entrySettings = entries.find(function(entry) { return entry && entry.id === "macondo.quickshare" }) || {}
       if (entrySettings.language === "en" || entrySettings.language === "es") persistLanguage(entrySettings.language)
+      if (typeof entrySettings.transferEffectsEnabled === "boolean")
+        persistTransferEffects(entrySettings.transferEffectsEnabled)
     } catch (e) {
       fail("Cannot read the language preference.", "No se pudo leer la preferencia de idioma.", e.message)
     }
@@ -83,8 +94,55 @@ Item {
       fail("Cannot save the language preference.", "No se pudo guardar la preferencia de idioma.")
       return
     }
+    entrySettings = next
     persistLanguage(value)
   }
+  function effectsPreferenceFailed(en, es, detail) {
+    effectsPreferenceIssue = { en: en, es: es, detail: detail || "" }
+  }
+  function persistTransferEffects(value) {
+    if (!effectsPreferenceLoaded || effectsPreferenceWriting || value === savedTransferEffects) return
+    effectsPreferenceWriting = true
+    var task = commandComponent.createObject(root, {
+      command: ["/usr/bin/env", "mkdir", "-p", configHome + "/omarchy-quickshare"],
+      purpose: "effects-preference"
+    })
+    pendingCommands++
+    task.running = true
+  }
+  function setTransferEffectsEnabled(value) {
+    if (typeof value !== "boolean") return
+    if (!value) stopTransferEffectsPreview()
+    var next = Object.assign({}, entrySettings, { transferEffectsEnabled: value })
+    if (!shell || !shell.updateEntryInline("macondo.quickshare", next)) {
+      effectsPreferenceFailed("Cannot save the animation preference.", "No se pudo guardar la preferencia de animaciones.")
+      return
+    }
+    entrySettings = next
+    if (effectsPreferenceLoaded && value === savedTransferEffects) effectsPreferenceIssue = null
+    persistTransferEffects(value)
+  }
+  function previewTransferEffects(direction, state, transport) {
+    if (!transferEffectsEnabled || online && activeTransfers) return false
+    if (["outbound", "inbound"].indexOf(direction) === -1 ||
+        ["connecting", "transferring"].indexOf(state) === -1 ||
+        transport !== null && ["lan", "bluetooth", "hotspot"].indexOf(transport) === -1) return false
+    // UI-only generic data: never copy a backend record, path, peer or PIN.
+    effectsPreview = {
+      direction: direction, state: state, transport: transport,
+      files: [{ name: tr("Preview file", "Archivo de muestra"), size: 8388608 }],
+      total_bytes: 8388608, transferred_bytes: state === "transferring" ? 3145728 : 0
+    }
+    effectsPreviewExpiry.restart()
+    return true
+  }
+  function stopTransferEffectsPreview() {
+    effectsPreviewExpiry.stop()
+    effectsPreview = null
+  }
+  onTransferEffectsEnabledChanged: if (!transferEffectsEnabled) stopTransferEffectsPreview()
+  onActiveTransfersChanged: if (online && activeTransfers) stopTransferEffectsPreview()
+  onOnlineChanged: if (!online || activeTransfers) stopTransferEffectsPreview()
   function probeBackend() { if (!backendProbe.running) backendProbe.running = true }
   function runSetup(action) {
     if (["install", "update", "remove"].indexOf(action) === -1 || busy) return
@@ -253,6 +311,34 @@ Item {
   }
 
   Component.onCompleted: probeBackend()
+  Component.onDestruction: {
+    stopTransferEffectsPreview()
+    effectsAnchorWindow = null
+  }
+  Timer {
+    id: effectsPreviewExpiry
+    interval: 8000
+    onTriggered: root.stopTransferEffectsPreview()
+  }
+  // A URL-loaded renderer avoids pulling qs.Commons into the native service
+  // registry's static import graph. Its lifetime is independent of Panel.qml.
+  Loader {
+    id: effectsLoader
+    source: Qt.resolvedUrl("TransferEffects.qml")
+    onLoaded: {
+      item.enabled = Qt.binding(function() { return root.transferEffectsEnabled })
+      item.connected = Qt.binding(function() { return root.online || root.effectsPreview !== null })
+      item.transfers = Qt.binding(function() { return root.online ? root.transfers : [] })
+      item.cancellingTransfers = Qt.binding(function() { return root.cancellingTransfers })
+      item.preview = Qt.binding(function() { return root.effectsPreview })
+      item.anchorWindow = Qt.binding(function() { return root.effectsAnchorWindow })
+      item.anchorItem = Qt.binding(function() { return root.panelAnchor })
+      item.bar = Qt.binding(function() { return root.panelBar })
+      item.language = Qt.binding(function() { return root.language })
+    }
+    onStatusChanged: if (status === Loader.Error)
+      root.fail("Cannot load Alpha transfer animations.", "No se pudieron cargar las animaciones Alpha.")
+  }
   Timer {
     interval: 1000
     repeat: true
@@ -329,6 +415,42 @@ Item {
     onFileChanged: reload()
   }
   FileView {
+    id: effectsFile
+    path: root.configHome + "/omarchy-quickshare/transfer-effects"
+    atomicWrites: true
+    watchChanges: true
+    printErrors: false
+    onLoaded: {
+      var preference = text().trim()
+      root.savedTransferEffects = preference === "on"
+      root.effectsPreferenceLoaded = true
+      if (preference !== "on" && preference !== "off")
+        root.effectsPreferenceFailed("Invalid saved animation preference.", "La preferencia guardada de animaciones no es válida.")
+      if (typeof root.entrySettings.transferEffectsEnabled === "boolean")
+        root.persistTransferEffects(root.entrySettings.transferEffectsEnabled)
+    }
+    onLoadFailed: function(error) {
+      root.savedTransferEffects = false
+      root.effectsPreferenceLoaded = true
+      if (error !== FileViewError.FileNotFound)
+        root.effectsPreferenceFailed("Cannot read the animation preference.", "No se pudo leer la preferencia de animaciones.", FileViewError.toString(error))
+      if (typeof root.entrySettings.transferEffectsEnabled === "boolean")
+        root.persistTransferEffects(root.entrySettings.transferEffectsEnabled)
+    }
+    onSaved: {
+      root.effectsPreferenceWriting = false
+      root.savedTransferEffects = text().trim() === "on"
+      root.effectsPreferenceIssue = null
+      if (typeof root.entrySettings.transferEffectsEnabled === "boolean")
+        root.persistTransferEffects(root.entrySettings.transferEffectsEnabled)
+    }
+    onSaveFailed: function(error) {
+      root.effectsPreferenceWriting = false
+      root.effectsPreferenceFailed("Cannot persist the animation preference.", "No se pudo conservar la preferencia de animaciones.", FileViewError.toString(error))
+    }
+    onFileChanged: reload()
+  }
+  FileView {
     path: Quickshell.env("HOME") + "/.config/omarchy/shell.json"
     watchChanges: true
     printErrors: false
@@ -377,6 +499,10 @@ Item {
         }
         if (exitCode !== 0 || exitStatus !== 0) {
           if (purpose === "cancel") root.clearCancellationRequest(transferId)
+          if (purpose === "effects-preference") {
+            root.effectsPreferenceWriting = false
+            root.effectsPreferenceFailed("Cannot persist the animation preference.", "No se pudo conservar la preferencia de animaciones.", errors.text.trim())
+          }
           root.fail("The command could not be completed (" + exitCode + ").", "El comando no se pudo completar (" + exitCode + ").", errors.text.trim())
         } else {
           if (errors.text.trim()) root.fail("Service details", "Detalles del servicio", errors.text.trim())
@@ -386,6 +512,15 @@ Item {
               root.savedLanguage = preference
             } catch (e) {
               root.fail("Cannot persist the language preference.", "No se pudo conservar la preferencia de idioma.", e.message)
+            }
+          }
+          if (purpose === "effects-preference") {
+            try {
+              // Use the current setting, not the value when mkdir started.
+              effectsFile.setText(root.transferEffectsEnabled ? "on\n" : "off\n")
+            } catch (e) {
+              root.effectsPreferenceWriting = false
+              root.effectsPreferenceFailed("Cannot persist the animation preference.", "No se pudo conservar la preferencia de animaciones.", e.message)
             }
           }
           if (purpose === "snapshot") root.consume(output.text, sourceGeneration)

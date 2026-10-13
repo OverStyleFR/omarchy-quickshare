@@ -1,10 +1,10 @@
 {
   "schemaVersion": 1,
   "id": "macondo.quickshare",
-  "name": "Quick Share",
+  "name": "Quick Share Alpha",
   "version": "0.1.2",
   "author": "Jhonny Suarez - PuroDelphi",
-  "description": "Send and receive photos, videos and files between Android and Omarchy over LAN or Bluetooth. Native Quick Share, Nautilus integration, no extra Android app.",
+  "description": "Alpha channel: optional themed layer-shell transfer effects for Quick Share. Uses the unchanged 0.1.2 Rust backend; not a marketplace release.",
   "license": "MIT",
   "kinds": ["service", "bar-widget", "panel"],
   "keepLoaded": true,
@@ -14,7 +14,7 @@
     "panel": "Panel.qml"
   },
   "barWidget": {
-    "displayName": "Quick Share",
+    "displayName": "Quick Share Alpha",
     "category": "Network",
     "allowMultiple": false,
     "defaultSection": "right"

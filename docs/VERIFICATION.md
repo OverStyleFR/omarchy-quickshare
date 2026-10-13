@@ -68,6 +68,14 @@ The new panel was also rendered against the actually installed 0.1.1 executable 
 
 No phone transfer, global procfs permission change, production-service maintenance or preview/screenshot modification was part of these privacy checks. The same-user session and root remain trusted boundaries, not a process sandbox.
 
+## Alpha layer-shell presentation
+
+The actual QML service/panel and new effects modules were exercised in Quickshell on Wayland with private preferences and UI-only synthetic activities. All three visual stages were exercised with LAN, Bluetooth, hotspot and unconfirmed transport. Captured rendered frames changed; confirmed LAN/Bluetooth motifs differed in each stage.
+
+The layer-shell trace showed the `omarchy-quickshare-alpha-effects` surface at overlay layer with keyboard interactivity `0` and an explicitly empty input region. Native toggle keyboard activation still worked underneath it. Halo textures exclude the card and safety margin; closing the panel changes to the anchored compact courier.
+
+Default-off, atomic preference persistence, reload without replay, eight-second preview expiry, concurrent directions/media, stable transfer identity through progress, cancellation stopping, disconnect/terminal cleanup and immediate opt-out were exercised. Previews did not send files, accept verification codes, mutate real snapshots or change network consent. These presentation checks do not establish new Android-transfer results.
+
 ## Evidence interpretation
 
 Successful transfer means engine completion plus the stated integrity method. A valid media container, a round trip, a capability label or 0/0 bytes alone is not independent destination integrity.

@@ -67,7 +67,7 @@ else
   [[ -x $BUILT_BINARY ]] || fail 'Cargo did not produce the backend executable.' 'Cargo no produjo el ejecutable del servicio.'
   # Preserve matching GPL corresponding source alongside all notices, not a mutable Git URL alone.
   tar --exclude=target --exclude=.git -czf "$STAGE/source.tar.gz" -C "$ROOT" \
-    Cargo.toml Cargo.lock src vendor scripts packaging manifest.json Service.qml BarWidget.qml Panel.qml nautilus LICENSE
+    Cargo.toml Cargo.lock src vendor scripts packaging manifest.json Service.qml BarWidget.qml Panel.qml TransferEffects.qml TransferEffectsArt.qml nautilus LICENSE
   check_resources
   pause_service
   install -Dm755 "$BUILT_BINARY" "$BINARY"

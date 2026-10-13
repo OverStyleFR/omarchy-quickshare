@@ -18,7 +18,7 @@ LC_ALL=C tar --sort=name --mtime="@${SOURCE_DATE_EPOCH:-0}" --owner=0 --group=0 
   --format=gnu -cf - \
   --exclude='target' --exclude='bindings' --exclude='.git' \
   --transform="s,^,omarchy-quickshare-$VERSION/," \
-  -C "$ROOT" Cargo.toml Cargo.lock src vendor manifest.json Service.qml BarWidget.qml Panel.qml nautilus packaging scripts LICENSE README.md preview.png CONTRIBUTING.md CODE_OF_CONDUCT.md SECURITY.md docs |
+  -C "$ROOT" Cargo.toml Cargo.lock src vendor manifest.json Service.qml BarWidget.qml Panel.qml TransferEffects.qml TransferEffectsArt.qml nautilus packaging scripts LICENSE README.md preview.png CONTRIBUTING.md CODE_OF_CONDUCT.md SECURITY.md docs |
   gzip -n > "$WORK/omarchy-quickshare-$VERSION.tar.gz"
 SOURCE_CHECKSUM=$(sha256sum "$WORK/omarchy-quickshare-$VERSION.tar.gz")
 SOURCE_CHECKSUM=${SOURCE_CHECKSUM%% *}

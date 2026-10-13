@@ -17,6 +17,17 @@ Ui.Panel {
   property bool selectionExpanded: true
   property bool settingsExpanded: false
   property bool pendingSelectionFocus: false
+  property string effectsPreviewMode: "preparation"
+  property string effectsPreviewTransport: "lan"
+  property bool effectsPopupReady: false
+  property var effectsRegisteredService: null
+  function registerEffectsAnchor() {
+    if (effectsRegisteredService && effectsRegisteredService.effectsAnchorWindow === popup)
+      effectsRegisteredService.effectsAnchorWindow = null
+    effectsRegisteredService = effectsPopupReady ? service : null
+    if (effectsRegisteredService) effectsRegisteredService.effectsAnchorWindow = popup
+  }
+  onServiceChanged: registerEffectsAnchor()
   bar: service ? service.panelBar : null
   manageIpc: false
   readonly property color foreground: Color.popups.text
@@ -214,6 +225,15 @@ Ui.Panel {
     centerOnBar: true
     contentWidth: fittedContentWidth(Style.space(520))
     contentHeight: fittedContentHeight(column.implicitHeight, Style.space(720))
+    Component.onCompleted: {
+      root.effectsPopupReady = true
+      root.registerEffectsAnchor()
+    }
+    Component.onDestruction: {
+      if (root.effectsRegisteredService) root.effectsRegisteredService.stopTransferEffectsPreview()
+      root.effectsPopupReady = false
+      root.registerEffectsAnchor()
+    }
 
     FocusScope {
       id: content
@@ -238,7 +258,7 @@ Ui.Panel {
           Ui.PanelHero {
             Layout.fillWidth: true
             title: "Quick Share"
-            meta: root.tr("Android file sharing", "Compartir archivos con Android")
+            meta: root.tr("Android file sharing · ALPHA", "Compartir archivos con Android · ALPHA")
             detail: root.connected ? root.tr("Ready", "Listo") : service && service.serviceDisabled ? root.tr("Service disabled", "Servicio desactivado") : service && !service.backendInstalled ? root.tr("Setup required", "Requiere instalación") : service && !service.backendCompatible ? root.tr("Service update required", "Requiere actualizar el servicio") : root.tr("Service unavailable", "Servicio no disponible")
             foreground: root.foreground
             iconOpacity: root.connected ? 1 : 0.5
@@ -618,6 +638,72 @@ Ui.Panel {
             visible: root.settingsExpanded
             Layout.fillWidth: true
             spacing: Style.space(10)
+            SectionCard {
+              Ui.PanelSectionHeader { text: root.tr("ALPHA · TRANSFER EFFECTS", "ALPHA · EFECTOS DE TRANSFERENCIA"); foreground: root.foreground }
+              Ui.Toggle {
+                Layout.fillWidth: true
+                label: root.tr("Animated transfer companion", "Acompañante de transferencia animado")
+                description: root.tr("Optional click-through effects around this card, or a compact companion when closed. Off by default.", "Efectos opcionales sin interceptar clics alrededor del panel, o un acompañante compacto al cerrarlo. Desactivados por defecto.")
+                foreground: root.foreground
+                checked: !!service && service.transferEffectsEnabled
+                enabled: !!service
+                onClicked: service.setTransferEffectsEnabled(!checked)
+              }
+              BodyText {
+                text: service && service.online && service.activeTransfers
+                  ? root.tr("Live transfers take priority; preview is paused.", "Las transferencias reales tienen prioridad; la vista previa está pausada.")
+                  : root.tr("UI preview only · 8 seconds · no files sent, PIN or network actions.", "Solo vista previa visual · 8 segundos · sin enviar archivos, PIN ni acciones de red.")
+                color: root.dim
+                font.pixelSize: Style.font.bodySmall
+              }
+              Ui.Dropdown {
+                Layout.fillWidth: true
+                label: root.tr("Preview activity", "Actividad de vista previa")
+                value: root.effectsPreviewMode
+                options: [
+                  { value: "preparation", label: root.tr("Preparation / connection", "Preparación / conexión") },
+                  { value: "send", label: root.tr("Sending files", "Enviando archivos") },
+                  { value: "receive", label: root.tr("Receiving files", "Recibiendo archivos") }
+                ]
+                foreground: root.foreground
+                enabled: !!service && service.transferEffectsEnabled
+                Accessible.name: root.tr("Preview activity", "Actividad de vista previa")
+                onChanged: function(value) { root.effectsPreviewMode = value }
+              }
+              Ui.Dropdown {
+                Layout.fillWidth: true
+                label: root.tr("Preview transport", "Medio de vista previa")
+                value: root.effectsPreviewTransport
+                options: [
+                  { value: "lan", label: root.tr("Wi-Fi / LAN", "Wi-Fi / red local") },
+                  { value: "bluetooth", label: "Bluetooth" },
+                  { value: "hotspot", label: root.tr("Direct Wi-Fi / hotspot", "Wi-Fi directo / punto de acceso") },
+                  { value: "unknown", label: root.tr("Transport not confirmed", "Sin medio confirmado") }
+                ]
+                foreground: root.foreground
+                enabled: !!service && service.transferEffectsEnabled
+                Accessible.name: root.tr("Preview transport", "Medio de vista previa")
+                onChanged: function(value) { root.effectsPreviewTransport = value }
+              }
+              RowLayout {
+                Layout.fillWidth: true
+                spacing: Style.spacing.controlGap
+                ActionButton {
+                  Layout.fillWidth: true
+                  text: service && service.effectsPreview ? root.tr("Restart preview", "Reiniciar vista previa") : root.tr("Preview · 8 s", "Vista previa · 8 s")
+                  enabled: !!service && service.transferEffectsEnabled && !(service.online && service.activeTransfers)
+                  onClicked: service.previewTransferEffects(
+                    root.effectsPreviewMode === "receive" ? "inbound" : "outbound",
+                    root.effectsPreviewMode === "preparation" ? "connecting" : "transferring",
+                    root.effectsPreviewTransport === "unknown" ? null : root.effectsPreviewTransport)
+                }
+                ActionButton {
+                  text: root.tr("Stop", "Detener")
+                  enabled: !!service && service.effectsPreview !== null
+                  onClicked: service.stopTransferEffectsPreview()
+                }
+              }
+            }
             Ui.Toggle {
               Layout.fillWidth: true
               label: root.tr("Allow interrupting my Wi-Fi", "Permitir interrumpir mi Wi-Fi")
