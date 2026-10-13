@@ -4,6 +4,8 @@
 
 Omarchy Quick Share connects your desktop to Android's existing Quick Share. The phone does not need a companion application. The desktop panel uses Omarchy's theme and supports English and Español.
 
+The panel header reads the installed plugin version from `manifest.json`, including prerelease suffixes when present. It does not infer a version from the Git branch or substitute the backend executable's version.
+
 ## Before sharing
 
 - Complete **Install service** from the panel and wait for **Ready**.

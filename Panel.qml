@@ -258,7 +258,7 @@ Ui.Panel {
           Ui.PanelHero {
             Layout.fillWidth: true
             title: "Quick Share"
-            meta: root.tr("Android file sharing · ALPHA", "Compartir archivos con Android · ALPHA")
+            meta: root.tr("Android file sharing", "Compartir archivos con Android") + (root.manifest && root.manifest.version ? " · v" + root.manifest.version : "")
             detail: root.connected ? root.tr("Ready", "Listo") : service && service.serviceDisabled ? root.tr("Service disabled", "Servicio desactivado") : service && !service.backendInstalled ? root.tr("Setup required", "Requiere instalación") : service && !service.backendCompatible ? root.tr("Service update required", "Requiere actualizar el servicio") : root.tr("Service unavailable", "Servicio no disponible")
             foreground: root.foreground
             iconOpacity: root.connected ? 1 : 0.5
