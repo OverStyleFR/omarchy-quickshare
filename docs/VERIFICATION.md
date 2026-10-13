@@ -76,6 +76,14 @@ That alpha run's layer-shell trace showed the `omarchy-quickshare-alpha-effects`
 
 Default-off, atomic preference persistence, reload without replay, eight-second preview expiry, concurrent directions/media, stable transfer identity through progress, cancellation stopping, disconnect/terminal cleanup and immediate opt-out were exercised. Previews did not send files, accept verification codes, mutate real snapshots or change network consent. These presentation checks do not establish new Android-transfer results.
 
+## LE bearer coordination — 0.2.1
+
+The ordinary-user read-only HCI connection query succeeded on the recorded Linux host with UID 1000 and no added Bluetooth capabilities. The native ABI probe observed 16-byte connection entries and a four-byte list header. The corrected daemon also started under the existing service's `NoNewPrivileges=yes` restriction.
+
+The locked workspace suite passed **75 tests**, with the consenting physical SDP regression ignored. New behavior regressions cover a live LE bearer without any metadata read, multiple/disconnecting LE bearers, release while a Classic audio ACL remains connected, and refusing a potentially truncated connection snapshot.
+
+A live 45-second visibility cycle exercised the corrected daemon's real BlueZ advertisement/scan schedule, expired normally, retained Bluetooth availability and reported no engine errors. Network consent stayed off and the configuration checksum was unchanged. No LE peer connected during this local smoke; it is not evidence of a new Android file transfer or a universal Realtek firmware fix.
+
 ## Evidence interpretation
 
 Successful transfer means engine completion plus the stated integrity method. A valid media container, a round trip, a capability label or 0/0 bytes alone is not independent destination integrity.

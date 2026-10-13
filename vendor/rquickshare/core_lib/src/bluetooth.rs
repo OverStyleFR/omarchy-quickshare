@@ -53,8 +53,8 @@
 //! Discovery owned by other clients causes a reported fail-closed state, not
 //! foreign StopDiscovery, radio power cycling or assumed firmware recovery.
 //! Visible mode alternates confirmed advertising (8s) and discovery (4s).
-//! Incoming slot readers defer both roles until Device1 Connected=false; hide
-//! can withdraw metadata without restarting scan while that bearer remains.
+//! All live LE bearers defer role transitions, even without a metadata read.
+//! Read-only kernel snapshots distinguish LE from unrelated Classic links.
 //! Cancellation is not a fabricated disconnect and never disconnects a peer.
 //! Hidden mode otherwise scans continuously. There is no stable own scan+AD
 //! concurrency. Scheduled withdrawal retains GATT, Classic discoverability,
@@ -70,7 +70,7 @@
 //! Other clients can race a D-Bus state snapshot; the lock serializes our
 //! commands, not theirs, and does not establish a controller firmware fix.
 
-use std::collections::{HashMap, HashSet};
+use std::collections::HashMap;
 use std::fs::{File, OpenOptions};
 use std::io::{self, Read, Write};
 use std::os::fd::{AsRawFd, FromRawFd, IntoRawFd, OwnedFd};
@@ -115,6 +115,87 @@ const SDP_MTU: u16 = 1024;
 const MAX_SDP_ATTRIBUTES: usize = 65_535;
 const MAX_SDP_CONTINUATION: usize = 16;
 
+
+const HCI_GET_CONNECTION_LIST: libc::c_ulong = 0x800448d4;
+const LE_LINK: u8 = 0x80;
+const BT_CLOSED: u16 = 9;
+const MAX_CONTROLLER_CONNECTIONS: usize = 64;
+
+#[repr(C)]
+#[derive(Clone, Copy, Default)]
+struct HciConnection {
+    handle: u16,
+    address: [u8; 6],
+    link_type: u8,
+    outgoing: u8,
+    state: u16,
+    link_mode: u32,
+}
+
+#[repr(C)]
+struct HciConnectionList {
+    index: u16,
+    count: u16,
+    connections: [HciConnection; MAX_CONTROLLER_CONNECTIONS],
+}
+
+impl HciConnectionList {
+    fn has_le_bearer(&self) -> Result<bool> {
+        // A full snapshot can have omitted another link. Never infer safety
+        // from a truncated list, including a list containing only Classic.
+        ensure!(
+            usize::from(self.count) < self.connections.len(),
+            "Bluetooth connection snapshot reached its capacity"
+        );
+        Ok(self.connections[..usize::from(self.count)]
+            .iter()
+            .any(|link| link.link_type == LE_LINK && link.state != BT_CLOSED))
+    }
+}
+
+struct HciConnections {
+    fd: OwnedFd,
+    index: u16,
+}
+
+impl HciConnections {
+    fn new(adapter: &str) -> Result<Self> {
+        let index = adapter
+            .strip_prefix("hci")
+            .context("invalid Bluetooth adapter name")?
+            .parse()?;
+        // An unbound HCI raw socket permits this read-only ioctl as an
+        // ordinary user. Do not bind a monitor, send commands, or add caps.
+        let fd = unsafe {
+            libc::socket(libc::AF_BLUETOOTH, libc::SOCK_RAW | libc::SOCK_CLOEXEC, 1)
+        };
+        if fd < 0 {
+            return Err(io::Error::last_os_error())
+                .context("opening read-only Bluetooth connection query");
+        }
+        Ok(Self {
+            fd: unsafe { OwnedFd::from_raw_fd(fd) },
+            index,
+        })
+    }
+
+    fn has_le_bearer(&self) -> Result<bool> {
+        let mut list = HciConnectionList {
+            index: self.index,
+            count: MAX_CONTROLLER_CONNECTIONS as u16,
+            connections: [HciConnection::default(); MAX_CONTROLLER_CONNECTIONS],
+        };
+        // Linux HCIGETCONNLIST writes the native C request and connection
+        // array; all storage is initialized, aligned and bounded on the stack.
+        if unsafe {
+            libc::ioctl(self.fd.as_raw_fd(), HCI_GET_CONNECTION_LIST, &mut list)
+        } < 0 {
+            return Err(io::Error::last_os_error())
+                .context("reading Bluetooth controller connections");
+        }
+        list.has_le_bearer()
+    }
+}
 // All scanner ownership and HCI-changing transitions for this controller go
 // through one lock. D-Bus StopDiscovery is issued by the same persistent owner
 // that started it, and Discovering=false is awaited before GATT/AD changes.
@@ -126,7 +207,7 @@ struct RadioCoordinator {
     state: Mutex<RadioState>,
     paused: watch::Sender<bool>,
     schedule: watch::Sender<Option<BleRoleWindow>>,
-    incoming_gatt: watch::Sender<IncomingGattActivity>,
+    connections: HciConnections,
 }
 
 struct RadioState {
@@ -135,15 +216,9 @@ struct RadioState {
     failed: bool,
     advertisement_active: bool,
     window: Option<BleRoleWindow>,
-    incoming_gatt: HashSet<Address>,
+    le_connected: bool,
 }
 
-#[derive(Clone, Debug)]
-enum IncomingGattActivity {
-    Idle,
-    Active,
-    Failed(Arc<str>),
-}
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 enum BleRole {
@@ -185,7 +260,7 @@ impl RadioState {
         self.scan_requested
             && !self.failed
             && !self.advertisement_active
-            && self.incoming_gatt.is_empty()
+            && !self.le_connected
             && self
                 .window
                 .is_none_or(|window| window.role == BleRole::Scanning && now < window.until)
@@ -193,7 +268,7 @@ impl RadioState {
 
     fn role_transition_due(&self, now: Instant) -> bool {
         !self.failed
-            && self.incoming_gatt.is_empty()
+            && !self.le_connected
             && self.window.is_some_and(|window| now >= window.until)
     }
 
@@ -250,7 +325,7 @@ impl RadioCoordinator {
             .context("opening owned Bluetooth coordination bus timed out")??;
         let (paused, _) = watch::channel(true);
         let (schedule, _) = watch::channel(None);
-        let (incoming_gatt, _) = watch::channel(IncomingGattActivity::Idle);
+        let connections = HciConnections::new(adapter.name())?;
         Ok(Arc::new(Self {
             path: format!("/org/bluez/{}", adapter.name()),
             adapter,
@@ -261,12 +336,21 @@ impl RadioCoordinator {
                 failed: false,
                 advertisement_active: false,
                 window: None,
-                incoming_gatt: HashSet::new(),
+                le_connected: false,
             }),
             paused,
             schedule,
-            incoming_gatt,
+            connections,
         }))
+    }
+
+    fn refresh_connections(&self, state: &mut RadioState) -> Result<()> {
+        let connected = self.connections.has_le_bearer()?;
+        if connected != state.le_connected {
+            debug!("Nearby LE bearer gate: connected={connected}; Classic links do not gate roles");
+        }
+        state.le_connected = connected;
+        Ok(())
     }
 
     fn set_window(&self, state: &mut RadioState, window: Option<BleRoleWindow>) {
@@ -276,6 +360,7 @@ impl RadioCoordinator {
 
     async fn pause_gatt(&self) -> Result<Option<tokio::sync::MutexGuard<'_, RadioState>>> {
         let mut state = self.state.lock().await;
+        self.refresh_connections(&mut state)?;
         ensure!(
             !state.failed,
             "Bluetooth radio coordination is failed closed"
@@ -306,119 +391,6 @@ impl RadioCoordinator {
         Ok(Some(state))
     }
 
-    async fn observe_incoming_gatt(
-        self: &Arc<Self>,
-        path: &zbus::zvariant::ObjectPath<'_>,
-        ctk: &CancellationToken,
-    ) -> Result<()> {
-        let suffix = path
-            .as_str()
-            .strip_prefix(self.path.as_str())
-            .and_then(|suffix| suffix.strip_prefix("/dev_"))
-            .context("GATT reader is not on this Bluetooth adapter")?;
-        ensure!(suffix.len() == 17, "invalid GATT reader device path");
-        let mut address_text = [0_u8; 17];
-        address_text.copy_from_slice(suffix.as_bytes());
-        for index in [2, 5, 8, 11, 14] {
-            ensure!(address_text[index] == b'_', "invalid GATT reader address");
-            address_text[index] = b':';
-        }
-        let address: Address = std::str::from_utf8(&address_text)?.parse()?;
-        if self.state.lock().await.incoming_gatt.contains(&address) {
-            return Ok(());
-        }
-        let device = self.adapter.device(address)?;
-        // Subscribe before checking Connected: a disconnect between the read
-        // and registration must not leave a permanent reader gate.
-        let events = timeout(OPERATION_TIMEOUT, device.events()).await??;
-        let adapter_events = timeout(OPERATION_TIMEOUT, self.adapter.events()).await??;
-        let mut state = self.state.lock().await;
-        ensure!(
-            !state.failed,
-            "Bluetooth radio coordination is failed closed"
-        );
-        ensure!(!ctk.is_cancelled(), "incoming GATT announcement canceled");
-        if state.incoming_gatt.contains(&address) {
-            return Ok(());
-        }
-        ensure!(
-            timeout(OPERATION_TIMEOUT, device.is_connected()).await??,
-            "incoming GATT reader disconnected before its read"
-        );
-        // Reject a stale device before changing scan ownership. A failed
-        // Connected query must not leave hidden-mode discovery paused.
-        if let Err(error) = self.stop(&mut state).await {
-            state.failed = true;
-            return Err(error);
-        }
-        state.incoming_gatt.insert(address);
-        self.incoming_gatt
-            .send_replace(IncomingGattActivity::Active);
-        debug!("Incoming Nearby GATT reader {address}; radio roles deferred until Connected=false");
-        let radio = self.clone();
-        let ctk = ctk.clone();
-        tokio::spawn(async move {
-            tokio::pin!(events);
-            tokio::pin!(adapter_events);
-            let outcome: Option<Result<()>> = loop {
-                tokio::select! {
-                    biased;
-                    // Cancellation is not disconnect confirmation. Retain the
-                    // gate so shutdown cannot resume scan or republish an AD.
-                    _ = ctk.cancelled() => break None,
-                    event = events.next() => match event {
-                        Some(bluer::DeviceEvent::PropertyChanged(
-                            bluer::DeviceProperty::Connected(false)
-                        )) => break Some(Ok(())),
-                        Some(_) => {}
-                        None => break Some(Err(anyhow::anyhow!(
-                            "Incoming GATT reader removed before Connected=false confirmation"
-                        ))),
-                    },
-                    event = adapter_events.next() => match event {
-                        Some(AdapterEvent::PropertyChanged(AdapterProperty::Powered(false))) =>
-                            break Some(Err(anyhow::anyhow!(
-                                "Bluetooth powered off with an incoming GATT reader"
-                            ))),
-                        Some(_) => {}
-                        None => break Some(Err(anyhow::anyhow!(
-                            "Bluetooth adapter removed with an incoming GATT reader"
-                        ))),
-                    },
-                }
-            };
-            let Some(outcome) = outcome else {
-                return;
-            };
-            let mut state = radio.state.lock().await;
-            let result = match outcome {
-                Ok(()) => {
-                    state.incoming_gatt.remove(&address);
-                    debug!("Incoming Nearby GATT reader {address} confirmed disconnected");
-                    if ctk.is_cancelled() {
-                        state.scan_requested = false;
-                    }
-                    radio.resume(&mut state).await
-                }
-                Err(error) => Err(error),
-            };
-            if let Err(error) = result {
-                state.failed = true;
-                radio
-                    .incoming_gatt
-                    .send_replace(IncomingGattActivity::Failed(format!("{error:#}").into()));
-            } else {
-                radio
-                    .incoming_gatt
-                    .send_replace(if state.incoming_gatt.is_empty() {
-                        IncomingGattActivity::Idle
-                    } else {
-                        IncomingGattActivity::Active
-                    });
-            }
-        });
-        Ok(())
-    }
 
     async fn wait_discovering(&self, wanted: bool) -> Result<()> {
         let events = self.adapter.events().await?;
@@ -462,6 +434,10 @@ impl RadioCoordinator {
     }
 
     async fn start(&self, state: &mut RadioState) -> Result<()> {
+        self.refresh_connections(state)?;
+        if state.le_connected {
+            return Ok(());
+        }
         ensure!(
             !state.failed,
             "Bluetooth radio coordination is failed closed"
@@ -469,10 +445,6 @@ impl RadioCoordinator {
         ensure!(
             !state.advertisement_active,
             "Bluetooth scanner cannot start while our advertisement is active"
-        );
-        ensure!(
-            state.incoming_gatt.is_empty(),
-            "Bluetooth scanner cannot start while an incoming GATT bearer is connected"
         );
         ensure!(self.adapter.active_advertising_instances().await? == 0,
             "Bluetooth controller is advertising for another client; scanner start refused without withdrawing its advertisement");
@@ -512,6 +484,7 @@ impl RadioCoordinator {
     }
 
     async fn resume(&self, state: &mut RadioState) -> Result<()> {
+        self.refresh_connections(state)?;
         if state.permits_scan(Instant::now()) && !state.scan_active {
             if let Err(error) = self.start(state).await {
                 state.failed = true;
@@ -737,16 +710,28 @@ impl Bluetooth {
     async fn run_announcements(self: Arc<Self>, ctk: CancellationToken) -> Result<()> {
         let mut visibility = self.visibility.clone();
         let mut schedule = self.radio.schedule.subscribe();
-        let mut incoming_gatt = self.radio.incoming_gatt.subscribe();
+        let rule = zbus::MatchRule::builder()
+            .msg_type(zbus::message::Type::Signal)
+            .sender("org.bluez")?
+            .interface("org.freedesktop.DBus.Properties")?
+            .member("PropertiesChanged")?
+            .path_namespace(self.radio.path.as_str())?
+            .arg(0, "org.bluez.Device1")?
+            .build();
+        let mut connections =
+            zbus::MessageStream::for_match_rule(rule, &self.radio.bus, None).await?;
         let mut visible: Option<Announcements> = None;
         let outcome: Result<()> = async {
             loop {
                 if ctk.is_cancelled() { break; }
                 let requested = *visibility.borrow_and_update() != Visibility::Invisible;
-                let reading = match &*incoming_gatt.borrow_and_update() {
-                    IncomingGattActivity::Idle => false,
-                    IncomingGattActivity::Active => true,
-                    IncomingGattActivity::Failed(error) => bail!("{error}"),
+                let reading = {
+                    let mut state = self.radio.state.lock().await;
+                    self.radio.refresh_connections(&mut state)?;
+                    if !requested && visible.is_none() {
+                        self.radio.resume(&mut state).await?;
+                    }
+                    state.le_connected
                 };
                 if requested && visible.is_none() && !reading {
                     visible = Some(self.announce(&ctk).await?);
@@ -765,15 +750,40 @@ impl Bluetooth {
                     changed = schedule.changed() => {
                         changed.context("Bluetooth role scheduler owner closed")?;
                     }
-                    changed = incoming_gatt.changed() => {
-                        changed.context("Bluetooth incoming GATT owner closed")?;
+                    changed = async {
+                        loop {
+                            let message = connections.next().await
+                                .context("Bluetooth connection observation ended")??;
+                            let body = message.body();
+                            let (_, properties, invalidated) = body.deserialize::<(
+                                &str,
+                                HashMap<&str, zbus::zvariant::Value<'_>>,
+                                Vec<&str>,
+                            )>()?;
+                            if properties.contains_key("Connected")
+                                || invalidated.contains(&"Connected")
+                            {
+                                break Ok::<(), anyhow::Error>(());
+                            }
+                        }
+                    } => {
+                        changed?;
                     }
                     _ = async {
-                        match window {
-                            Some(window) => tokio::time::sleep_until(window.until).await,
-                            None => std::future::pending::<()>().await,
+                        if reading {
+                            // BlueZ Connected combines Classic and LE, so a
+                            // second bearer may change without a signal. This
+                            // passive policy tick releases an LE-only gate
+                            // even while a Classic headset remains connected.
+                            tokio::time::sleep(BLE_SCANNING_WINDOW).await;
+                        } else {
+                            match window {
+                                Some(window) => tokio::time::sleep_until(window.until).await,
+                                None => std::future::pending::<()>().await,
+                            }
                         }
-                    }, if !reading && visible.as_ref().is_some_and(|announcements| announcements.ble.is_some()) => {
+                    }, if reading || visible.as_ref().is_some_and(|announcements| announcements.ble.is_some()) => {
+                        if reading { continue; }
                         if *visibility.borrow() == Visibility::Invisible { continue; }
                         if let Some(announcements) = visible.as_mut() {
                             announcements.advance_role(&ctk, &visibility).await?;
@@ -1266,7 +1276,6 @@ impl Bluetooth {
                         available: announcements.available.clone(),
                         visibility: self.visibility.clone(),
                         ctk: ctk.clone(),
-                        radio: self.radio.clone(),
                     },
                 )
                 .await?;
@@ -1947,7 +1956,6 @@ struct NearbyGattSlot {
     available: Arc<AtomicBool>,
     visibility: watch::Receiver<Visibility>,
     ctk: CancellationToken,
-    radio: Arc<RadioCoordinator>,
 }
 
 #[derive(Debug, zbus::DBusError)]
@@ -1999,14 +2007,6 @@ impl NearbyGattSlot {
                 ),
                 _ => NearbyGattError::Failed(error.to_string()),
             })?;
-        let device = options
-            .get("device")
-            .and_then(|value| <&zbus::zvariant::ObjectPath<'_>>::try_from(value).ok())
-            .ok_or_else(|| NearbyGattError::Failed("Missing GATT reader device".into()))?;
-        self.radio
-            .observe_incoming_gatt(device, &self.ctk)
-            .await
-            .map_err(|error| NearbyGattError::Failed(format!("{error:#}")))?;
         if !self.available.load(Ordering::Acquire)
             || self.ctk.is_cancelled()
             || *self.visibility.borrow() == Visibility::Invisible
@@ -2075,9 +2075,10 @@ impl BleAnnouncements {
             !state.scan_active && !self.radio.adapter.is_discovering().await?,
             "Discovery must be confirmed stopped before advertising role"
         );
+        self.radio.refresh_connections(state)?;
         ensure!(
-            state.incoming_gatt.is_empty(),
-            "Incoming GATT bearer must disconnect before advertising role"
+            !state.le_connected,
+            "LE bearer must disconnect before advertising role"
         );
         ensure!(
             self.available.load(Ordering::Acquire),
@@ -2199,7 +2200,15 @@ impl Announcements {
         visibility: &watch::Receiver<Visibility>,
     ) -> Result<()> {
         let radio = self.radio.clone();
-        let mut state = radio.pause().await?;
+        let mut state = radio.state.lock().await;
+        radio.refresh_connections(&mut state)?;
+        if state.le_connected {
+            return Ok(());
+        }
+        if let Err(error) = radio.stop(&mut state).await {
+            state.failed = true;
+            return Err(error);
+        }
         if ctk.is_cancelled() {
             state.scan_requested = false;
             return Ok(());
@@ -2211,9 +2220,9 @@ impl Announcements {
         }
         let result: Result<()> = async {
             let Some(window) = state.window else { return Ok(()); };
-            // Incoming metadata bearers also hold the role, without holding
-            // the lock needed for hide/cleanup. Only Connected=false releases
-            // that gate; metadata reads are not file-data sockets.
+            // A connection can precede or omit ReadValue. The kernel bearer
+            // snapshot, not a metadata read or Device1's aggregate Connected
+            // flag, decides when a radio handoff is safe.
             if !state.role_transition_due(Instant::now()) { return Ok(()); }
             let next = window.next(Instant::now());
             let ble = self.ble.as_mut().context("scheduled BLE advertiser is unavailable")?;
@@ -3069,7 +3078,7 @@ mod tests {
             failed: false,
             advertisement_active: true,
             window: Some(ad),
-            incoming_gatt: HashSet::new(),
+            le_connected: false,
         };
         assert!(!state.permits_scan(start));
         state.advertisement_active = false;
@@ -3094,35 +3103,63 @@ mod tests {
     }
 
     #[test]
-    fn incoming_gatt_bearers_block_scan_and_expired_roles_until_last_disconnect() {
+    fn le_bearers_without_metadata_reads_block_roles_but_classic_audio_does_not() {
         let now = Instant::now();
         let ad = BleRoleWindow::new(BleRole::Advertising, now);
+        let mut links = HciConnectionList {
+            index: 0,
+            count: 3,
+            connections: [HciConnection::default(); MAX_CONTROLLER_CONNECTIONS],
+        };
+        links.connections[0].link_type = 1; // Established Classic audio ACL.
+        links.connections[0].state = 1;
         let mut state = RadioState {
             scan_requested: true,
             scan_active: false,
             failed: false,
-            advertisement_active: true,
+            advertisement_active: false,
             window: Some(ad),
-            incoming_gatt: HashSet::new(),
+            le_connected: links.has_le_bearer().unwrap(),
         };
-        let first = Address::new([1, 2, 3, 4, 5, 6]);
-        let second = Address::new([6, 5, 4, 3, 2, 1]);
-        state.incoming_gatt.insert(first);
-        state.incoming_gatt.insert(first); // Multiple ATT offsets, one bearer.
-        state.incoming_gatt.insert(second);
+        assert!(state.role_transition_due(ad.until));
+        // Public-address LE requires no ReadValue or discovery metadata.
+        links.connections[1].link_type = LE_LINK;
+        links.connections[1].state = 1;
+        links.connections[2].link_type = LE_LINK;
+        links.connections[2].state = 8; // Disconnect is not yet confirmed.
+        state.le_connected = links.has_le_bearer().unwrap();
         assert!(!state.role_transition_due(ad.until + Duration::from_secs(60)));
-        state.incoming_gatt.remove(&first);
-        assert!(!state.role_transition_due(ad.until));
-        state.window = None; // Hiding may remove the AD before the ACL ends.
-        state.advertisement_active = false;
+        state.window = None; // Hide can withdraw AD, not resume an LE scan.
         assert!(!state.permits_scan(now));
-        state.incoming_gatt.remove(&second);
+        links.connections[1].state = BT_CLOSED;
+        state.le_connected = links.has_le_bearer().unwrap();
+        assert!(!state.permits_scan(now));
+        links.connections[2].state = BT_CLOSED;
+        state.le_connected = links.has_le_bearer().unwrap();
+        // Classic remains connected: aggregate Device1 Connected=true must
+        // not keep an LE gate closed after its last actual bearer disappears.
         assert!(state.permits_scan(now));
         state.window = Some(ad);
-        assert!(!state.role_transition_due(ad.until - Duration::from_nanos(1)));
         assert!(state.role_transition_due(ad.until));
-        state.failed = true;
-        assert!(!state.role_transition_due(ad.until));
+    }
+
+    #[test]
+    fn incomplete_controller_snapshot_cannot_authorize_radio_handoff() {
+        let mut links = HciConnectionList {
+            index: 0,
+            count: MAX_CONTROLLER_CONNECTIONS as u16,
+            connections: [HciConnection::default(); MAX_CONTROLLER_CONNECTIONS],
+        };
+        links.connections.fill(HciConnection {
+            link_type: 1,
+            state: 1,
+            ..Default::default()
+        });
+        assert!(links.has_le_bearer().is_err());
+        links.count -= 1;
+        assert!(!links.has_le_bearer().unwrap());
+        links.count = u16::MAX;
+        assert!(links.has_le_bearer().is_err());
     }
 
     #[test]
@@ -3138,7 +3175,7 @@ mod tests {
             failed: false,
             advertisement_active: false,
             window: None,
-            incoming_gatt: HashSet::new(),
+            le_connected: false,
         };
         assert!(radio.begin_ble_header_read(&mut reads, address, header, now));
         // No frame was installed: this is the timeout/failed-read state.
@@ -3168,7 +3205,7 @@ mod tests {
             failed: false,
             advertisement_active: false,
             window: Some(scan),
-            incoming_gatt: HashSet::new(),
+            le_connected: false,
         };
         let mut reads = HashMap::new();
         assert!(radio.begin_ble_header_read(&mut reads, address, header, now));

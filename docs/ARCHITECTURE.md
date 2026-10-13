@@ -34,7 +34,9 @@ LAN uses mDNS and TCP, default port **47593**. Bluetooth discovery uses BLE/GATT
 
 The protocol uses UKEY2/P-256 key exchange, authenticated encryption/MAC and message-sequence checks. Names and sizes are introduced for the receiver's consent screen. Device names and Bluetooth addresses are discovery metadata, not authenticated account identity. Verify the displayed code and handle consent explicitly.
 
-Incoming GATT metadata readers hold a role-coordination gate until their connection ends. Hiding or cancelling a transfer is not proof that the reader disconnected. Radio errors remain explicit; the service does not reset unrelated adapters or disconnect foreign clients to hide a failure.
+Live LE connections hold the radio-coordination gate even when a peer skips reading our GATT metadata. An ordinary-user, unbound HCI socket uses the read-only Linux `HCIGETCONNLIST` ioctl to distinguish LE bearers, including public-address links, from unrelated Classic audio connections. No extra capabilities or privileged Bluetooth monitor are required. Device connection signals wake the coordinator; a passive policy tick also detects LE disappearance when BlueZ's aggregate `Connected` flag remains true for Classic.
+
+Hiding or cancelling a transfer is not disconnect confirmation. Incomplete or unreadable connection snapshots fail closed. Radio errors remain explicit; the service does not reset adapters, disconnect foreign clients or silently retry a transfer. Coordination checks prevent changes while a known LE bearer is live, but are not a guarantee against firmware faults or races with other Bluetooth clients.
 
 Temporary network changes require explicit Wi-Fi-interruption consent. Hosting/joining compatible routes uses NetworkManager-owned profiles and protocol-protected credentials. No Wi-Fi Direct/P2P, WPA3, 6 GHz, Google account/contact identity or lossless resume is advertised.
 
