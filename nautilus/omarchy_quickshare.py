@@ -121,10 +121,12 @@ class OmarchyQuickShare(GObject.GObject, Nautilus.MenuProvider):
         binary = "/usr/bin/omarchy-quickshare" if os.access("/usr/bin/omarchy-quickshare", os.X_OK) else str(local_binary)
         try:
             process = Gio.Subprocess.new(
-                [binary, "share", "--", *paths],
-                Gio.SubprocessFlags.STDOUT_PIPE | Gio.SubprocessFlags.STDERR_PIPE,
+                [binary, "share"],
+                Gio.SubprocessFlags.STDIN_PIPE
+                | Gio.SubprocessFlags.STDOUT_PIPE
+                | Gio.SubprocessFlags.STDERR_PIPE,
             )
-            process.communicate_utf8_async(None, None, self._completed, None)
+            process.communicate_utf8_async(json.dumps(paths), None, self._completed, None)
         except GLib.Error as error:
             self._show_error(str(error))
 

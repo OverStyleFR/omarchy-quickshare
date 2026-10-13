@@ -1,11 +1,12 @@
 mod integration;
 mod service;
+mod share_selection;
 mod ui_language;
 
 use anyhow::{bail, Context, Result};
 use clap::{Parser, Subcommand};
 use futures_util::StreamExt;
-use std::io::{self, Write};
+use std::io::{self, Read, Write};
 use std::path::PathBuf;
 
 const BUS: &str = "io.omarchy.QuickShare";
@@ -46,15 +47,15 @@ enum Command {
         #[arg(value_parser = ["on", "off"])]
         value: String,
     },
+    /// Send files from a JSON path array on stdin to the selected peer.
     Send {
         peer: String,
-        #[arg(required = true)]
-        files: Vec<PathBuf>,
     },
-    /// Open the Omarchy panel with local files selected; never start a transfer.
-    Share {
-        #[arg(required = true)]
-        files: Vec<PathBuf>,
+    /// Open the panel with a JSON path array on stdin; never start a transfer.
+    Share,
+    /// Consume a prepared selection and print its JSON path array.
+    TakeShare {
+        token: String,
     },
     Accept {
         id: String,
@@ -65,9 +66,8 @@ enum Command {
     Cancel {
         id: String,
     },
-    DownloadDir {
-        path: PathBuf,
-    },
+    /// Set the download directory from a JSON string on stdin.
+    DownloadDir,
     /// Select local files through the desktop portal; output a JSON array.
     PickFiles,
     /// Report actual local tools and radio capabilities (not Android interoperability).
@@ -81,12 +81,34 @@ fn print_json_line(value: &str) -> Result<()> {
     Ok(())
 }
 
-fn canonical_files(files: &[PathBuf]) -> Result<Vec<String>> {
+const MAX_PRIVATE_INPUT_BYTES: u64 = 32 * 1024 * 1024;
+
+fn read_private_json<T: serde::de::DeserializeOwned>(reader: impl Read) -> Result<T> {
+    let mut bytes = Vec::new();
+    reader
+        .take(MAX_PRIVATE_INPUT_BYTES + 1)
+        .read_to_end(&mut bytes)
+        .context("No se pudo leer la selección privada de stdin")?;
+    if bytes.len() as u64 > MAX_PRIVATE_INPUT_BYTES {
+        bail!("La selección privada supera el límite de 32 MiB");
+    }
+    serde_json::from_slice(&bytes).context("Se esperaba una selección JSON válida en stdin")
+}
+
+fn read_files(reader: impl Read) -> Result<Vec<String>> {
+    let files: Vec<String> = read_private_json(reader)?;
+    if files.is_empty() || files.len() > share_selection::MAX_FILES {
+        bail!("Selecciona entre 1 y 1000 archivos");
+    }
+    Ok(files)
+}
+
+fn canonical_files(files: &[String]) -> Result<Vec<String>> {
     files
         .iter()
         .map(|p| {
-            let path = std::fs::canonicalize(p)
-                .with_context(|| format!("Archivo inaccesible: {}", p.display()))?;
+            let path =
+                std::fs::canonicalize(p).with_context(|| format!("Archivo inaccesible: {p}"))?;
             path.into_os_string()
                 .into_string()
                 .map_err(|_| anyhow::anyhow!("La ruta no puede representarse en D-Bus"))
@@ -94,10 +116,7 @@ fn canonical_files(files: &[PathBuf]) -> Result<Vec<String>> {
         .collect()
 }
 
-async fn share(files: &[PathBuf]) -> Result<()> {
-    if files.is_empty() || files.len() > 1000 {
-        bail!("Selecciona entre 1 y 1000 archivos");
-    }
+async fn share(files: &[String]) -> Result<()> {
     let paths = canonical_files(files)?;
     for path in &paths {
         let metadata =
@@ -107,27 +126,39 @@ async fn share(files: &[PathBuf]) -> Result<()> {
         }
         std::fs::File::open(path).with_context(|| format!("Archivo no legible: {path}"))?;
     }
-    let payload = serde_json::json!({ "files": paths }).to_string();
-    let output = tokio::process::Command::new("omarchy-shell")
-        .args(["shell", "summon", "macondo.quickshare", &payload])
-        .output()
-        .await
-        .context("No se pudo ejecutar omarchy-shell para abrir Quick Share")?;
-    if !output.status.success() {
-        bail!(
-            "No se pudo abrir el panel Quick Share: {}",
-            String::from_utf8_lossy(&output.stderr).trim()
-        );
+    let connection = zbus::Connection::session().await?;
+    let proxy = zbus::Proxy::new(&connection, BUS, PATH, INTERFACE).await?;
+    let token: String = proxy.call("PrepareShare", &(paths,)).await?;
+    let payload = serde_json::json!({ "share_token": token }).to_string();
+    let summon_result = async {
+        let output = tokio::process::Command::new("omarchy-shell")
+            .args(["shell", "summon", "macondo.quickshare", &payload])
+            .output()
+            .await
+            .context("No se pudo ejecutar omarchy-shell para abrir Quick Share")?;
+        if !output.status.success() {
+            bail!(
+                "No se pudo abrir el panel Quick Share: {}",
+                String::from_utf8_lossy(&output.stderr).trim()
+            );
+        }
+        let response = std::str::from_utf8(&output.stdout)
+            .context("Respuesta no válida del shell Omarchy")?
+            .trim();
+        if response != "ok" {
+            bail!(
+                "El shell no abrió Quick Share (respuesta: {response:?}); comprueba que el plugin esté instalado y habilitado"
+            );
+        }
+        Ok(())
     }
-    let response = std::str::from_utf8(&output.stdout)
-        .context("Respuesta no válida del shell Omarchy")?
-        .trim();
-    if response != "ok" {
-        bail!(
-            "El shell no abrió Quick Share (respuesta: {response:?}); comprueba que el plugin esté instalado y habilitado"
-        );
+    .await;
+    if summon_result.is_err() {
+        // Discard the private selection on every shell failure, including spawn/parse failures.
+        // The panel may already have consumed it, so a missing token is harmless here.
+        let _: zbus::Result<Vec<String>> = proxy.call("TakeShare", &(token,)).await;
     }
-    Ok(())
+    summon_result
 }
 
 #[derive(serde::Deserialize)]
@@ -167,7 +198,7 @@ async fn main() -> Result<()> {
         .await;
     }
     match cli.command {
-        Command::Share { files } => share(&files).await?,
+        Command::Share => share(&read_files(io::stdin().lock())?).await?,
         Command::PickFiles => {
             let selection = ashpd::desktop::file_chooser::SelectedFiles::open_file()
                 .title("Compartir con Quick Share")
@@ -238,10 +269,14 @@ async fn main() -> Result<()> {
                 Command::NetworkConsent { value } => {
                     let _: () = proxy.call("SetNetworkConsent", &(value == "on",)).await?;
                 }
-                Command::Send { peer, files } => {
-                    let paths = canonical_files(&files)?;
+                Command::Send { peer } => {
+                    let paths = canonical_files(&read_files(io::stdin().lock())?)?;
                     let id: String = proxy.call("Send", &(peer, paths)).await?;
                     println!("{id}");
+                }
+                Command::TakeShare { token } => {
+                    let paths: Vec<String> = proxy.call("TakeShare", &(token,)).await?;
+                    print_json_line(&serde_json::to_string(&paths)?)?;
                 }
                 Command::Accept { id } => {
                     let _: () = proxy.call("Respond", &(id, true)).await?;
@@ -252,7 +287,8 @@ async fn main() -> Result<()> {
                 Command::Cancel { id } => {
                     let _: () = proxy.call("Cancel", &(id,)).await?;
                 }
-                Command::DownloadDir { path } => {
+                Command::DownloadDir => {
+                    let path: String = read_private_json(io::stdin().lock())?;
                     let path = std::fs::canonicalize(path)?;
                     let path = path.to_str().context("Ruta no representable en D-Bus")?;
                     let _: () = proxy.call("SetDownloadDirectory", &(path,)).await?;
@@ -262,4 +298,67 @@ async fn main() -> Result<()> {
         }
     }
     Ok(())
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn private_file_input_preserves_json_paths_and_enforces_count_and_type() {
+        let files = vec![
+            "/private/quote\" and ü".to_owned(),
+            "/private/new\nline".to_owned(),
+        ];
+        let json = serde_json::to_vec(&files).unwrap();
+        assert_eq!(read_files(json.as_slice()).unwrap(), files);
+        for input in [
+            "",
+            "[]",
+            "null",
+            "{}",
+            "[1]",
+            "[\"file\"",
+            "\"/private/file\"",
+        ] {
+            assert!(read_files(input.as_bytes()).is_err(), "{input:?}");
+        }
+        let maximum = vec!["/private/file"; share_selection::MAX_FILES];
+        assert_eq!(
+            read_files(serde_json::to_vec(&maximum).unwrap().as_slice())
+                .unwrap()
+                .len(),
+            share_selection::MAX_FILES
+        );
+        let excessive = vec!["/private/file"; share_selection::MAX_FILES + 1];
+        assert!(read_files(serde_json::to_vec(&excessive).unwrap().as_slice()).is_err());
+    }
+
+    #[test]
+    fn private_input_has_an_exact_byte_limit_without_truncating_json() {
+        let padding = io::repeat(b' ').take(MAX_PRIVATE_INPUT_BYTES - 2);
+        let exact = io::Cursor::new(b"[]").chain(padding);
+        assert!(read_private_json::<Vec<String>>(exact).unwrap().is_empty());
+        let oversized =
+            io::Cursor::new(b"[]").chain(io::repeat(b' ').take(MAX_PRIVATE_INPUT_BYTES - 1));
+        assert!(read_private_json::<Vec<String>>(oversized).is_err());
+        assert!(read_private_json::<String>(io::Cursor::new(b"\"/private/dir\"")).is_ok());
+        assert!(read_private_json::<String>(io::Cursor::new(b"[\"/private/dir\"]")).is_err());
+        assert!(read_private_json::<Vec<String>>(io::Cursor::new(b"[\"\xff\"]")).is_err());
+    }
+
+    #[test]
+    fn private_paths_are_not_accepted_as_cli_arguments() {
+        for arguments in [
+            vec!["quickshare", "share", "/private/file"],
+            vec!["quickshare", "send", "peer", "/private/file"],
+            vec!["quickshare", "download-dir", "/private/directory"],
+        ] {
+            assert!(Cli::try_parse_from(arguments).is_err());
+        }
+        assert!(Cli::try_parse_from(["quickshare", "share"]).is_ok());
+        assert!(Cli::try_parse_from(["quickshare", "send", "peer"]).is_ok());
+        assert!(Cli::try_parse_from(["quickshare", "download-dir"]).is_ok());
+        assert!(Cli::try_parse_from(["quickshare", "take-share", "opaque-token"]).is_ok());
+    }
 }

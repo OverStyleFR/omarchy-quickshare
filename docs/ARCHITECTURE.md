@@ -26,6 +26,8 @@ Snapshots carry an instance ID, monotonic revision, visibility/deadline, backend
 
 A transfer's medium and terminal result come from engine state, not a UI capability label. Send/accept/reject/cancel operate on the actual peer or transfer IDs.
 
+Selected file paths travel through private stdin pipes and the user's session D-Bus, not subprocess arguments. `PrepareShare` holds a selection in daemon memory and returns an opaque token. The shell summon carries only that token; the panel retrieves the paths with `TakeShare`, which consumes the selection once. Pending selections expire after five minutes and are limited to 16. Opening a selection does not start a transfer. This boundary protects against other local users reading process command lines; it does not isolate the application from root or other processes in the same user session.
+
 ## Local transports and authentication
 
 LAN uses mDNS and TCP, default port **47593**. Bluetooth discovery uses BLE/GATT metadata; file content travels through Classic RFCOMM rather than OBEX or GATT characteristics.
@@ -54,19 +56,20 @@ omarchy-quickshare visible 120
 omarchy-quickshare visible 0
 omarchy-quickshare network-consent on
 omarchy-quickshare network-consent off
-omarchy-quickshare share -- "$HOME/Downloads/example file.txt"
+omarchy-quickshare pick-files | omarchy-quickshare share
 ```
 
-`share` prepares the panel only. Other commands:
+`share` prepares the panel only. `share` and `send DEVICE_ID` read a JSON array of file paths from stdin; `download-dir` reads a JSON string. File paths are not accepted as positional arguments. Keep paths out of command strings and external programs' arguments when constructing input; the portal pipeline above avoids both. Other commands:
 
 | Command | Effect |
 | --- | --- |
-| `send DEVICE_ID FILE...` | Request an outgoing transfer |
+| `send DEVICE_ID` | Request an outgoing transfer using a JSON file-path array on stdin |
 | `accept TRANSFER_ID` | Approve the identified request |
 | `reject TRANSFER_ID` | Reject the identified request |
 | `cancel TRANSFER_ID` | Request cancellation |
-| `download-dir DIRECTORY` | Select an existing absolute destination |
+| `download-dir` | Select an existing absolute destination from a JSON string on stdin |
 | `pick-files` | Open the desktop portal chooser; cancellation returns `[]` |
+| `take-share TOKEN` | Retrieve and consume a prepared selection; output a JSON array |
 | `watch` | Initial snapshot followed by NDJSON changes |
 
 Use `--help` for current arguments. `doctor` inspects local tools, radio availability and permissions; it does not certify a remote Android transfer. `serve` has transport-isolation flags for controlled development. Never run another daemon alongside the installed service with the same D-Bus name.

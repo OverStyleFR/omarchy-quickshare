@@ -95,18 +95,18 @@ Ui.Panel {
     if (typeof payload === "string") {
       try { request = payload ? JSON.parse(payload) : {} } catch (e) { request = {} }
     }
-    var hasFiles = request && Object.prototype.hasOwnProperty.call(request, "files")
-    autoSelectPeer = !!hasFiles
-    if (hasFiles) {
-      if (service) service.setSelectedFiles(request.files)
+    var hasShare = request && Object.prototype.hasOwnProperty.call(request, "share_token")
+    autoSelectPeer = !!hasShare
+    if (hasShare && service) service.takeShare(request.share_token)
+    if (hasShare) {
       selectedPeer = ""
       updatePeerSelection()
       selectionExpanded = true
     }
     var requestedTransfer = request && request.transfer_id ? String(request.transfer_id) : ""
-    if (requestedTransfer !== "" || !hasFiles) highlightedTransfer = requestedTransfer
+    if (requestedTransfer !== "" || !hasShare) highlightedTransfer = requestedTransfer
     pendingReveal = requestedTransfer !== ""
-    pendingSelectionFocus = !!hasFiles && !pendingReveal
+    pendingSelectionFocus = !!hasShare && !pendingReveal
     if (!pendingReveal && !pendingSelectionFocus) flick.contentY = 0
     controller.show()
     if (service) service.refresh()
@@ -274,7 +274,7 @@ Ui.Panel {
           }
           BodyText {
             visible: !root.connected
-            text: service && service.setupBusy ? root.tr("Complete the maintenance action in the Omarchy terminal, then return here.", "Completa el mantenimiento en la terminal de Omarchy y vuelve aquí.") : service && service.serviceDisabled ? root.tr("The service is disabled. Install service enables it again without changing preferences or received files.", "El servicio está desactivado. Instalar servicio lo habilita de nuevo sin cambiar preferencias ni archivos recibidos.") : service && service.backendInstalled && !service.backendCompatible ? root.tr("Update the older service for native Git plugin support. Install service opens the authorized upgrade terminal.", "Actualiza el servicio anterior para usar el plugin Git nativo. Instalar servicio abre la terminal de actualización autorizada.") : root.tr("Install service to set up or repair the backend. Sharing remains unavailable until the service connects.", "Instala el servicio para configurar o reparar el motor. Compartir no estará disponible hasta conectar el servicio.")
+            text: service && service.setupBusy ? root.tr("Complete the maintenance action in the Omarchy terminal, then return here.", "Completa el mantenimiento en la terminal de Omarchy y vuelve aquí.") : service && service.serviceDisabled ? root.tr("The service is disabled. Install service enables it again without changing preferences or received files.", "El servicio está desactivado. Instalar servicio lo habilita de nuevo sin cambiar preferencias ni archivos recibidos.") : service && service.backendInstalled && !service.backendCompatible ? root.tr("Update service to version 0.1.2 or newer for private file selection. Install service opens the authorized upgrade terminal.", "Actualiza el servicio a la versión 0.1.2 o posterior para seleccionar archivos de forma privada. Instalar servicio abre la terminal de actualización autorizada.") : root.tr("Install service to set up or repair the backend. Sharing remains unavailable until the service connects.", "Instala el servicio para configurar o reparar el motor. Compartir no estará disponible hasta conectar el servicio.")
             color: root.dim
             font.pixelSize: Style.font.bodySmall
           }
@@ -415,7 +415,7 @@ Ui.Panel {
                   text: root.tr("Clear", "Vaciar")
                   iconText: "󰆴"
                   enabled: service && service.selectedFiles.length > 0 && !service.busy
-                  onClicked: service.selectedFiles = []
+                  onClicked: service.clearSelectedFiles()
                 }
               }
               EmptyState {

@@ -17,6 +17,8 @@ Item {
   property int pendingCommands: 0
   property bool picking: false
   property var selectedFiles: []
+  property int selectionGeneration: 0
+  property var pendingShare: null
   property var localIssue: null
   readonly property string localError: localIssue ? tr(localIssue.en, localIssue.es) + (localIssue.detail ? "\n" + localIssue.detail : "") : ""
   property var entrySettings: ({})
@@ -153,14 +155,21 @@ Item {
     watchError = ""
     dismissedBackendErrors = backendErrors
   }
-  function invoke(args, kind, transferId) {
+  function invoke(args, kind, transferId, inputPayload, selectionRequest) {
     if (serviceDisabled || !backendInstalled) {
       fail("Install service before using this action.", "Instala el servicio antes de usar esta acción.")
       return
     }
+    if (!backendCompatible) {
+      fail("Update service before using this action.", "Actualiza el servicio antes de usar esta acción.")
+      return
+    }
     var task = commandComponent.createObject(root, {
       command: ["/usr/bin/env", backendBinary].concat(args), purpose: kind || "action",
-      sourceGeneration: generation, transferId: transferId || ""
+      sourceGeneration: generation, transferId: transferId || "",
+      selectionRequest: selectionRequest === undefined ? selectionGeneration : selectionRequest,
+      stdinEnabled: inputPayload !== undefined,
+      inputPayload: inputPayload === undefined ? "" : JSON.stringify(inputPayload)
     })
     if (kind !== "picker") pendingCommands++
     task.running = true
@@ -178,7 +187,7 @@ Item {
   function consent(enabled) { invoke(["network-consent", enabled ? "on" : "off"]) }
   function downloadDirectory(path) {
     if (!path || path[0] !== "/") { fail("Choose an absolute folder path.", "Elige una ruta absoluta de carpeta."); return }
-    invoke(["download-dir", path])
+    invoke(["download-dir"], "action", "", path)
   }
   function setSelectedFiles(files) {
     if (!Array.isArray(files) || files.length === 0 ||
@@ -189,14 +198,37 @@ Item {
     selectedFiles = files.slice()
     return true
   }
+  function beginSelectionRequest(clear) {
+    selectionGeneration++
+    pendingShare = null
+    if (clear) selectedFiles = []
+    return selectionGeneration
+  }
+  function clearSelectedFiles() { beginSelectionRequest(true) }
+  function takeShare(token) {
+    var requestGeneration = beginSelectionRequest(true)
+    if (typeof token !== "string" || token.length === 0) {
+      fail("Cannot read the shared file selection.", "No se pudo leer la selección de archivos compartidos.")
+      return
+    }
+    pendingShare = { token: token, selectionRequest: requestGeneration }
+    probeBackend()
+  }
+  function consumePendingShare() {
+    var request = pendingShare
+    pendingShare = null
+    if (!request || request.selectionRequest !== selectionGeneration) return
+    invoke(["take-share", request.token], "take-share", "", undefined, request.selectionRequest)
+  }
   function pickFiles() {
-    if (picking || serviceDisabled || !backendInstalled) return
+    if (picking || serviceDisabled || !backendInstalled || !backendCompatible) return
+    var requestGeneration = beginSelectionRequest(false)
     picking = true
-    invoke(["pick-files"], "picker")
+    invoke(["pick-files"], "picker", "", undefined, requestGeneration)
   }
   function send(peer) {
     if (!online || busy || !peer || selectedFiles.length === 0) return
-    invoke(["send", peer].concat(selectedFiles), "send")
+    invoke(["send", peer], "send", "", selectedFiles)
   }
   function respond(id, accept) { invoke([accept ? "accept" : "reject", id]) }
   function cancellationRequested(id) { return !!cancellingTransfers[id] }
@@ -240,7 +272,7 @@ Item {
   }
   Process {
     id: backendProbe
-    command: ["bash", "-c", "binary=''; if [[ -x /usr/bin/omarchy-quickshare ]]; then binary=/usr/bin/omarchy-quickshare; elif [[ -x \"$1/.local/bin/omarchy-quickshare\" ]]; then binary=\"$1/.local/bin/omarchy-quickshare\"; fi; compatible=false; if [[ -n $binary ]]; then version=$(\"$binary\" --version) || exit 1; version=${version##* }; if [[ $version =~ ^[0-9]+\\.[0-9]+\\.[0-9]+$ ]] && [[ $(vercmp \"$version\" 0.1.1) -ge 0 ]]; then compatible=true; fi; fi; jq -cn --arg binary \"$binary\" --argjson compatible \"$compatible\" '{binary:$binary,compatible:$compatible}'", "bash", Quickshell.env("HOME")]
+    command: ["bash", "-c", "binary=''; if [[ -x /usr/bin/omarchy-quickshare ]]; then binary=/usr/bin/omarchy-quickshare; elif [[ -x \"$1/.local/bin/omarchy-quickshare\" ]]; then binary=\"$1/.local/bin/omarchy-quickshare\"; fi; compatible=false; if [[ -n $binary ]]; then version=$(\"$binary\" --version) || exit 1; version=${version##* }; if [[ $version =~ ^[0-9]+\\.[0-9]+\\.[0-9]+$ ]] && [[ $(vercmp \"$version\" 0.1.2) -ge 0 ]]; then compatible=true; fi; fi; jq -cn --arg binary \"$binary\" --argjson compatible \"$compatible\" '{binary:$binary,compatible:$compatible}'", "bash", Quickshell.env("HOME")]
     stdout: StdioCollector { id: backendOutput; waitForEnd: true }
     onExited: function(code) {
       var result = {}
@@ -252,6 +284,7 @@ Item {
         watch.command = ["/usr/bin/env", root.backendBinary, "watch"]
         watch.running = true
       }
+      root.consumePendingShare()
     }
   }
   Process {
@@ -323,12 +356,25 @@ Item {
       property int sourceGeneration: 0
       property string transferId: ""
       property string preference: ""
+      property int selectionRequest: 0
+      property string inputPayload: ""
+      onStarted: {
+        if (!stdinEnabled) return
+        write(inputPayload + "\n")
+        inputPayload = ""
+        // Quickshell closes the write channel when stdinEnabled becomes false.
+        stdinEnabled = false
+      }
       stdout: StdioCollector { id: output; waitForEnd: true }
       stderr: StdioCollector { id: errors; waitForEnd: true }
       onExited: function(exitCode, exitStatus) { finish(exitCode, exitStatus) }
       function finish(exitCode, exitStatus) {
         if (purpose !== "picker") root.pendingCommands--
         if (purpose === "picker") root.picking = false
+        if ((purpose === "picker" || purpose === "take-share") && selectionRequest !== root.selectionGeneration) {
+          Qt.callLater(function() { task.destroy() })
+          return
+        }
         if (exitCode !== 0 || exitStatus !== 0) {
           if (purpose === "cancel") root.clearCancellationRequest(transferId)
           root.fail("The command could not be completed (" + exitCode + ").", "El comando no se pudo completar (" + exitCode + ").", errors.text.trim())
@@ -349,7 +395,11 @@ Item {
               // An empty portal result means cancellation, not a new selection.
               if (!Array.isArray(files) || files.length > 0) root.setSelectedFiles(files)
             } catch (e) { root.fail("Cannot read the file picker result.", "No se pudo leer el resultado del selector de archivos.", e.message) }
-          } else if (purpose === "send") root.selectedFiles = []
+          } else if (purpose === "take-share") {
+            try {
+              root.setSelectedFiles(JSON.parse(output.text))
+            } catch (e) { root.fail("Cannot read the shared file selection.", "No se pudo leer la selección de archivos compartidos.", e.message) }
+          } else if (purpose === "send" && selectionRequest === root.selectionGeneration) root.clearSelectedFiles()
         }
         Qt.callLater(function() { task.destroy() })
       }

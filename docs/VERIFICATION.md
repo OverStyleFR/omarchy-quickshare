@@ -56,6 +56,18 @@ The 0.1.1-1 Arch package was built using the disk-backed temporary workspace, ex
 
 These local lifecycle scenarios used isolated homes and network namespaces. Process-control adapters managed real daemons without modifying the host systemd manager; package authorization boundaries used adapters rather than host package changes. Isolated NetworkManager errors remained visible. The observations establish lifecycle and UI behavior, not a new Android transfer or transport-readiness result.
 
+## Private file-selection handoff — 0.1.2
+
+The locked workspace build and deterministic tests completed with **74 tests passed** and one consenting physical SDP test ignored. Regression cases cover stdin JSON type/count/byte limits, rejected positional file-path arguments, isolated one-shot selections, monotonic expiry, capacity and preparation without transfer actions.
+
+An isolated home, session D-Bus and network namespace exercised the actual Rust client/daemon, Nautilus provider activation with `Gio.Subprocess`, Quickshell processes and native QML/Wayland panel. Unicode, quotation marks and newline-containing names arrived as exact canonical paths through stdin and the token handoff. Send and destination-folder commands reached the real D-Bus methods; an unavailable synthetic peer was rejected without starting a transfer. **369 process command-line samples** contained no selected path/name, including JSON-escaped forms.
+
+Single/multiple synthetic device models retained their selection rules. Delayed process adapters exercised overlapping imports, stale picker results, picker cancellation and an earlier send completing after a newer selection; they are not file-transfer evidence. Invalid tokens cleared stale selections. Shell spawn, nonzero exit, invalid UTF-8 and unexpected replies discarded prepared selections and preserved all available slots.
+
+The new panel was also rendered against the actually installed 0.1.1 executable on a private bus: it showed **Service update required**, rejected file-selection retrieval with an update message and kept an empty selection without starting a transfer.
+
+No phone transfer, global procfs permission change, production-service maintenance or preview/screenshot modification was part of these privacy checks. The same-user session and root remain trusted boundaries, not a process sandbox.
+
 ## Evidence interpretation
 
 Successful transfer means engine completion plus the stated integrity method. A valid media container, a round trip, a capability label or 0/0 bytes alone is not independent destination integrity.

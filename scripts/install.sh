@@ -17,7 +17,7 @@ if package_installed; then
   VERSION=$("$SYSTEM_BINARY" --version)
   VERSION=${VERSION##* }
   [[ $VERSION =~ ^[0-9]+\.[0-9]+\.[0-9]+$ ]] || fail 'Cannot determine the packaged backend version.' 'No se puede determinar la versión del servicio empaquetado.'
-  if [[ $ACTION == update || $(vercmp "$VERSION" 0.1.1) -lt 0 ]]; then
+  if [[ $ACTION == update || $(vercmp "$VERSION" 0.1.2) -lt 0 ]]; then
     require_commands makepkg cargo rustc protoc pkg-config sudo
     confirm \
       'Build the current checkout and authorize sudo pacman -U for the Quick Share package? Shared dependencies will not be removed. [y/N]' \

@@ -1,3 +1,4 @@
+use crate::share_selection::ShareSelections;
 use crate::ui_language::UiLanguage;
 use crate::{integration::NautilusIntegration, BUS, INTERFACE, PATH};
 use anyhow::{bail, Context, Result};
@@ -8,7 +9,7 @@ use serde::{Deserialize, Serialize};
 use std::collections::BTreeMap;
 use std::path::{Path, PathBuf};
 use std::sync::Arc;
-use std::time::{Duration, SystemTime, UNIX_EPOCH};
+use std::time::{Duration, Instant, SystemTime, UNIX_EPOCH};
 use tokio::sync::{broadcast, mpsc, oneshot, watch, RwLock};
 use tokio_util::sync::CancellationToken;
 
@@ -116,6 +117,7 @@ struct SnapshotEnvelope<'a> {
 
 struct Shared {
     state: RwLock<Snapshot>,
+    share_selections: RwLock<ShareSelections>,
     revisions: watch::Sender<u64>,
     commands: mpsc::Sender<Operation>,
 }
@@ -173,6 +175,22 @@ impl Interface {
     }
     async fn send(&self, peer_id: String, files: Vec<String>) -> zbus::fdo::Result<String> {
         self.0.execute(Action::Send(peer_id, files)).await
+    }
+    async fn prepare_share(&self, files: Vec<String>) -> zbus::fdo::Result<String> {
+        self.0
+            .share_selections
+            .write()
+            .await
+            .prepare(files, Instant::now())
+            .map_err(|error| zbus::fdo::Error::InvalidArgs(error.to_string()))
+    }
+    async fn take_share(&self, token: String) -> zbus::fdo::Result<Vec<String>> {
+        self.0
+            .share_selections
+            .write()
+            .await
+            .take(&token, Instant::now())
+            .map_err(|error| zbus::fdo::Error::InvalidArgs(error.to_string()))
     }
     async fn respond(&self, id: String, accept: bool) -> zbus::fdo::Result<()> {
         self.0
@@ -644,6 +662,7 @@ pub async fn serve(port: u16, download: Option<PathBuf>, options: EngineOptions)
             capabilities,
             errors: Vec::new(),
         }),
+        share_selections: RwLock::new(ShareSelections::default()),
         revisions,
         commands: commands_tx,
     });
@@ -762,6 +781,7 @@ pub async fn serve(port: u16, download: Option<PathBuf>, options: EngineOptions)
                 }
             },
             _ = expiry.tick() => {
+                shared.share_selections.write().await.expire(Instant::now());
                 let expired = shared.state.read().await.visibility_expires_at.is_some_and(|deadline| now() >= deadline);
                 if expired { let _ = apply_operation(&shared, &mut engine, &outgoing, Action::Visibility(0)).await; }
                 let stale: Vec<u32> = {
@@ -847,11 +867,10 @@ pub async fn doctor() -> Result<()> {
 mod tests {
     use super::*;
 
-    #[tokio::test]
-    async fn socket_close_cannot_turn_completed_transfer_into_failure() {
+    fn shared_for_test() -> (Arc<Shared>, mpsc::Receiver<Operation>) {
         let (revisions, _) = watch::channel(0);
-        let (commands, _) = mpsc::channel(1);
-        let shared = Shared {
+        let (commands, receiver) = mpsc::channel(1);
+        let shared = Arc::new(Shared {
             state: RwLock::new(Snapshot {
                 version: 1,
                 visible: false,
@@ -868,9 +887,37 @@ mod tests {
                 },
                 errors: vec![],
             }),
+            share_selections: RwLock::new(ShareSelections::default()),
             revisions,
             commands,
-        };
+        });
+        (shared, receiver)
+    }
+
+    #[tokio::test]
+    async fn prepared_selections_do_not_change_snapshot_or_enqueue_engine_actions() {
+        let (shared, mut commands) = shared_for_test();
+        let before = shared.snapshot().await.unwrap();
+        let interface = Interface(shared.clone());
+        let files = vec!["/private/selected file".to_owned()];
+        let token = interface.prepare_share(files.clone()).await.unwrap();
+        assert_eq!(shared.snapshot().await.unwrap(), before);
+        assert!(matches!(
+            commands.try_recv(),
+            Err(mpsc::error::TryRecvError::Empty)
+        ));
+        assert_eq!(interface.take_share(token.clone()).await.unwrap(), files);
+        assert!(interface.take_share(token).await.is_err());
+        assert_eq!(shared.snapshot().await.unwrap(), before);
+        assert!(matches!(
+            commands.try_recv(),
+            Err(mpsc::error::TryRecvError::Empty)
+        ));
+    }
+
+    #[tokio::test]
+    async fn socket_close_cannot_turn_completed_transfer_into_failure() {
+        let (shared, _commands) = shared_for_test();
         handle_message(
             &shared,
             ChannelMessage {

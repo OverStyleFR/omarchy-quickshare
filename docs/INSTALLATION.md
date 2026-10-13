@@ -67,6 +67,8 @@ omarchy plugin update macondo.quickshare
 
 Then open **Settings** in the panel and choose **Update service** in the **Service** section. Source mode rebuilds the current locked checkout; package mode creates and installs the corresponding Arch package with local authorization. Do not claim the daemon is updated merely because the QML checkout changed.
 
+Version **0.1.2** requires the updated backend for private file-selection handoff. A 0.1.1 or older backend displays **Service update required**; update the service as well as the native plugin before sharing files. Restart Nautilus after saving work so its process loads the updated extension.
+
 If Omarchy keeps a previously loaded component after a plugin update, use `omarchy restart shell` before opening its updated controls. Shell reload does not itself cancel the independent daemon's transfers, but service maintenance still requires them to end first.
 
 ## Remove
