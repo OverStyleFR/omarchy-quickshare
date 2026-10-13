@@ -23,7 +23,10 @@ use std::{
 
 use anyhow::{anyhow, bail, ensure, Context, Result};
 #[cfg(unix)]
-use std::os::unix::fs::{MetadataExt, PermissionsExt};
+use std::os::{
+    fd::{AsRawFd, FromRawFd, OwnedFd, RawFd},
+    unix::fs::{MetadataExt, PermissionsExt},
+};
 use tokio::{
     io::AsyncWriteExt,
     process::Command,
@@ -42,6 +45,15 @@ type Permit = Arc<OwnedMutexGuard<()>>;
 
 #[derive(Clone, Debug)]
 pub struct NetworkManager;
+
+/// A currently activated physical LAN address, not a lease or permission to
+/// change networking. Callers must re-query before committing an upgrade.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct LanInterface {
+    pub interface: String,
+    pub address: Ipv4Addr,
+    pub netmask: Ipv4Addr,
+}
 
 /// Distinguish failed activation rollback from a harmless cancelled operation.
 /// Sessions must never turn this failure into a successful Cancelled terminal.
@@ -91,6 +103,27 @@ impl NetworkLease {
 }
 
 impl NetworkManager {
+    /// Read-only, bounded snapshot of existing physical Wi-Fi/Ethernet LANs.
+    /// Wi-Fi sorts before Ethernet, then interface and IPv4 address; at most
+    /// eight exact NM/kernel address matches are returned. No radio, profile,
+    /// lease lock, consent setting or mutation permission is involved.
+    pub async fn lan_interfaces(
+        ctk: &tokio_util::sync::CancellationToken,
+    ) -> Result<Vec<LanInterface>> {
+        ensure!(!ctk.is_cancelled(), "LAN discovery cancelled");
+        if !cfg!(target_os = "linux") {
+            return Ok(Vec::new());
+        }
+        tokio::select! {
+            biased;
+            _ = ctk.cancelled() => bail!("LAN discovery cancelled"),
+            result = timeout(
+                Duration::from_secs(u64::from(QUERY_WAIT) + 5),
+                query_lan_interfaces(),
+            ) => result.context("LAN discovery exceeded its bounded deadline")?,
+        }
+    }
+
     /// Probe daemon/radio state, managed Wi-Fi, AP/WPA2/CCMP capability and
     /// non-interactive Polkit permissions. This does not mutate network state.
     /// An occupied interface is available only subject to create/join consent.
@@ -298,6 +331,200 @@ fn select_device<'a>(devices: &'a [Device], ap: bool, band: Option<&str>) -> Res
         .filter(|device| device.suitable(ap, band))
         .min_by_key(|device| device.active.is_some())
         .ok_or_else(|| anyhow!("no ready NetworkManager-managed Wi-Fi interface supports the required WPA2 mode and band"))
+}
+
+struct LanDevice {
+    interface: String,
+    wifi: bool,
+    addresses: Vec<(Ipv4Addr, Ipv4Addr)>,
+}
+
+async fn query_lan_interfaces() -> Result<Vec<LanInterface>> {
+    // One live device snapshot avoids querying saved profile addresses or
+    // coupling wired LAN eligibility to the global Wi-Fi radio state.
+    let output = nmcli(
+        &[
+            "--terse",
+            "--fields",
+            "GENERAL.DEVICE,GENERAL.TYPE,GENERAL.STATE,GENERAL.NM-MANAGED,GENERAL.CON-UUID,IP4.ADDRESS",
+            "device",
+            "show",
+        ],
+        None,
+        QUERY_WAIT,
+    )
+    .await?;
+    let mut devices = parse_lan_devices(&output);
+    devices.sort_by(|left, right| {
+        (!left.wifi, &left.interface).cmp(&(!right.wifi, &right.interface))
+    });
+    if devices.is_empty() {
+        return Ok(Vec::new());
+    }
+    // An unbound datagram socket is only an ioctl handle: no packets are sent.
+    let fd = unsafe { libc::socket(libc::AF_INET, libc::SOCK_DGRAM | libc::SOCK_CLOEXEC, 0) };
+    if fd < 0 {
+        return Err(io::Error::last_os_error()).context("cannot inspect LAN link flags");
+    }
+    let fd = unsafe { OwnedFd::from_raw_fd(fd) };
+    let addresses = if_addrs::get_if_addrs().context("cannot read live LAN addresses")?;
+    let mut candidates = Vec::new();
+    for device in devices {
+        if !kernel_lan_ready(&device.interface, fd.as_raw_fd()).await {
+            continue;
+        }
+        for (address, netmask) in device.addresses {
+            if !addresses.iter().any(|live| {
+                live.name == device.interface
+                    && matches!(&live.addr, if_addrs::IfAddr::V4(ip)
+                        if ip.ip == address && ip.netmask == netmask)
+            }) {
+                continue;
+            }
+            let candidate = LanInterface {
+                interface: device.interface.clone(),
+                address,
+                netmask,
+            };
+            if !candidates.contains(&candidate) {
+                candidates.push(candidate);
+            }
+            if candidates.len() == 8 {
+                return Ok(candidates);
+            }
+        }
+    }
+    Ok(candidates)
+}
+
+fn parse_lan_devices(output: &str) -> Vec<LanDevice> {
+    let mut devices = Vec::new();
+    let mut rows = Vec::new();
+    for line in output.lines().filter(|line| !line.is_empty()) {
+        let fields = split_escaped(line);
+        if fields.first().is_some_and(|key| key == "GENERAL.DEVICE") && !rows.is_empty() {
+            if let Some(device) = parse_lan_device(&rows) {
+                devices.push(device);
+            }
+            rows.clear();
+        }
+        rows.push(fields);
+    }
+    if let Some(device) = parse_lan_device(&rows) {
+        devices.push(device);
+    }
+    devices
+}
+
+fn parse_lan_device(rows: &[Vec<String>]) -> Option<LanDevice> {
+    if rows.iter().any(|row| row.len() != 2) {
+        return None;
+    }
+    let field = |key: &str| {
+        let mut values = rows.iter().filter(|row| row[0] == key);
+        let value = values.next()?.get(1)?;
+        // Duplicate device identity/state properties are ambiguous.
+        values.next().is_none().then_some(value.as_str())
+    };
+    let interface = field("GENERAL.DEVICE")?;
+    validate_interface(interface).ok()?;
+    let wifi = match field("GENERAL.TYPE")? {
+        "wifi" | "802-11-wireless" => true,
+        "ethernet" | "802-3-ethernet" => false,
+        _ => return None,
+    };
+    if field("GENERAL.STATE")?.split_whitespace().next()? != "100"
+        || field("GENERAL.NM-MANAGED")? != "yes"
+    {
+        return None;
+    }
+    Uuid::parse_str(field("GENERAL.CON-UUID")?).ok()?;
+    let mut addresses: Vec<_> = rows
+        .iter()
+        .filter(|row| {
+            row[0] == "IP4.ADDRESS"
+                || row[0]
+                    .strip_prefix("IP4.ADDRESS[")
+                    .and_then(|key| key.strip_suffix(']'))
+                    .and_then(|index| index.parse::<usize>().ok())
+                    .is_some_and(|index| index > 0)
+        })
+        .filter_map(|row| parse_lan_ipv4(&row[1]))
+        .collect();
+    addresses.sort_unstable();
+    addresses.dedup();
+    (!addresses.is_empty()).then(|| LanDevice {
+        interface: interface.to_owned(),
+        wifi,
+        addresses,
+    })
+}
+
+fn parse_lan_ipv4(value: &str) -> Option<(Ipv4Addr, Ipv4Addr)> {
+    let (address, prefix) = value.split_once('/')?;
+    let address = address.parse().ok()?;
+    let prefix: u32 = prefix.parse().ok()?;
+    if !(1..=30).contains(&prefix) {
+        return None;
+    }
+    let netmask = Ipv4Addr::from(u32::MAX << (32 - prefix));
+    usable_lan_ipv4(address, netmask).then_some((address, netmask))
+}
+
+fn usable_lan_ipv4(address: Ipv4Addr, netmask: Ipv4Addr) -> bool {
+    let mask = u32::from(netmask);
+    let prefix = mask.leading_ones();
+    if !(1..=30).contains(&prefix) || mask != u32::MAX << (32 - prefix) {
+        return false;
+    }
+    let host = u32::from(address) & !mask;
+    is_usable_ipv4(address) && host != 0 && host != !mask
+}
+
+async fn kernel_lan_ready(interface: &str, fd: RawFd) -> bool {
+    let path = Path::new("/sys/class/net").join(interface);
+    // NM calls virtual Ethernet devices "ethernet" too. Hardware presence,
+    // rather than an interface-name convention, excludes bridges/veth/tunnels.
+    let Ok(device) = tokio::fs::canonicalize(path.join("device")).await else {
+        return false;
+    };
+    if !device.starts_with("/sys/devices") || device.starts_with("/sys/devices/virtual") {
+        return false;
+    }
+    let (Ok(operstate), Ok(carrier)) = (
+        tokio::fs::read_to_string(path.join("operstate")).await,
+        tokio::fs::read_to_string(path.join("carrier")).await,
+    ) else {
+        return false;
+    };
+    let Some(flags) = kernel_lan_flags(fd, interface) else {
+        return false;
+    };
+    kernel_lan_link_up(flags, &operstate, &carrier)
+}
+
+fn kernel_lan_flags(fd: RawFd, interface: &str) -> Option<u32> {
+    // Unlike sysfs's raw dev->flags (often 0x1003 on a healthy link),
+    // SIOCGIFFLAGS includes the kernel-computed IFF_RUNNING state.
+    let mut request: libc::ifreq = unsafe { std::mem::zeroed() };
+    if interface.len() >= request.ifr_name.len() {
+        return None;
+    }
+    for (slot, byte) in request.ifr_name.iter_mut().zip(interface.bytes()) {
+        *slot = byte as libc::c_char;
+    }
+    if unsafe { libc::ioctl(fd, libc::SIOCGIFFLAGS, &mut request) } < 0 {
+        return None;
+    }
+    Some(u32::from(unsafe { request.ifr_ifru.ifru_flags } as u16))
+}
+
+fn kernel_lan_link_up(flags: u32, operstate: &str, carrier: &str) -> bool {
+    flags & (libc::IFF_UP as u32 | libc::IFF_RUNNING as u32)
+        == (libc::IFF_UP as u32 | libc::IFF_RUNNING as u32)
+        && flags & libc::IFF_LOOPBACK as u32 == 0
+        && operstate.trim() == "up"
+        && carrier.trim() == "1"
 }
 
 async fn radio_ready() -> Result<bool> {
@@ -688,13 +915,16 @@ async fn active_gateway(interface: &str, hosting: bool) -> Result<IpAddr> {
 }
 
 fn usable_ipv4(value: &str) -> Option<Ipv4Addr> {
-    let address: Ipv4Addr = value.parse().ok()?;
-    (!address.is_unspecified()
+    let address = value.parse().ok()?;
+    is_usable_ipv4(address).then_some(address)
+}
+
+fn is_usable_ipv4(address: Ipv4Addr) -> bool {
+    !address.is_unspecified()
         && !address.is_loopback()
         && !address.is_multicast()
         && !address.is_broadcast()
-        && !address.is_link_local())
-    .then_some(address)
+        && !address.is_link_local()
 }
 
 async fn active_frequency(interface: &str) -> Result<i32> {
@@ -1390,7 +1620,103 @@ fn split_escaped(line: &str) -> Vec<String> {
 
 #[cfg(test)]
 mod tests {
-    use super::{frequency_channel, parse_radio_ready, require_consent, validate_credentials};
+    use super::{
+        frequency_channel, kernel_lan_link_up, parse_lan_devices, parse_lan_ipv4,
+        parse_radio_ready, require_consent, usable_lan_ipv4, validate_credentials,
+    };
+    use std::net::Ipv4Addr;
+
+    #[test]
+    fn lan_snapshot_requires_live_activation_and_current_addresses() {
+        let detail = "GENERAL.DEVICE:physical0\n\
+GENERAL.TYPE:wifi\n\
+GENERAL.STATE:100 (connected)\n\
+GENERAL.NM-MANAGED:yes\n\
+GENERAL.CON-UUID:ab11bc22-cd33-4e44-af55-001122334455\n\
+IP4.ADDRESS[1]:192.168.7.9/24\n\
+IP4.ADDRESS[2]:10.20.30.40/16\n\
+IP4.ADDRESS[3]:192.168.7.9/24\n\
+IP4.ADDRESS[4]:169.254.1.2/16\n";
+        let devices = parse_lan_devices(detail);
+        assert_eq!(devices.len(), 1);
+        assert_eq!(devices[0].interface, "physical0");
+        assert!(devices[0].wifi);
+        assert_eq!(
+            devices[0].addresses,
+            vec![
+                (Ipv4Addr::new(10, 20, 30, 40), Ipv4Addr::new(255, 255, 0, 0)),
+                (Ipv4Addr::new(192, 168, 7, 9), Ipv4Addr::new(255, 255, 255, 0)),
+            ]
+        );
+        for (from, to) in [
+            ("100 (connected)", "30 (disconnected)"),
+            ("GENERAL.NM-MANAGED:yes", "GENERAL.NM-MANAGED:no"),
+            ("ab11bc22-cd33-4e44-af55-001122334455", "--"),
+            ("ab11bc22-cd33-4e44-af55-001122334455", "invalid"),
+            ("GENERAL.TYPE:wifi", "GENERAL.TYPE:bridge"),
+            ("GENERAL.TYPE:wifi", "GENERAL.TYPE:tun"),
+            ("GENERAL.DEVICE:physical0", "GENERAL.DEVICE:../escape"),
+        ] {
+            assert!(parse_lan_devices(&detail.replace(from, to)).is_empty());
+        }
+        assert!(parse_lan_devices(&format!("{detail}GENERAL.STATE:100\n")).is_empty());
+        let wired = detail
+            .replace("GENERAL.TYPE:wifi", "GENERAL.TYPE:ethernet")
+            .replace("physical0", "wired0");
+        let devices = parse_lan_devices(&format!("{detail}\n{wired}"));
+        assert_eq!(devices.len(), 2);
+        assert!(!devices[1].wifi);
+        assert_eq!(devices[1].interface, "wired0");
+    }
+
+    #[test]
+    fn lan_ipv4_accepts_real_subnets_without_private_address_assumptions() {
+        for address in ["192.168.7.9/24", "10.20.30.40/16", "198.51.100.9/24"] {
+            assert!(parse_lan_ipv4(address).is_some(), "{address}");
+        }
+        for address in [
+            "0.0.0.0/24",
+            "127.0.0.1/8",
+            "224.0.0.1/24",
+            "255.255.255.255/24",
+            "169.254.1.2/16",
+            "192.168.7.0/24",
+            "192.168.7.255/24",
+            "192.168.7.9/0",
+            "192.168.7.9/31",
+            "192.168.7.9/32",
+            "192.168.7.9/33",
+            "192.168.7.9",
+            "192.168.7.9/24/24",
+        ] {
+            assert!(parse_lan_ipv4(address).is_none(), "{address}");
+        }
+        let address = Ipv4Addr::new(192, 168, 7, 9);
+        for mask in [
+            Ipv4Addr::UNSPECIFIED,
+            Ipv4Addr::new(255, 0, 255, 0),
+            Ipv4Addr::new(255, 255, 255, 254),
+            Ipv4Addr::BROADCAST,
+        ] {
+            assert!(!usable_lan_ipv4(address, mask), "{mask}");
+        }
+        assert!(usable_lan_ipv4(address, Ipv4Addr::new(255, 255, 255, 0)));
+    }
+
+    #[test]
+    fn lan_link_requires_up_running_carrier_and_operstate() {
+        assert!(kernel_lan_link_up(0x1043, "up\n", "1\n"));
+        for (flags, state, carrier) in [
+            (0x1003, "up", "1"),
+            (0x1042, "up", "1"),
+            (0x1043, "down", "1"),
+            (0x1043, "dormant", "1"),
+            (0x1043, "up", "0"),
+            (0x104b, "up", "1"),
+        ] {
+            assert!(!kernel_lan_link_up(flags, state, carrier));
+        }
+    }
 
     #[test]
     fn radio_state_parses_nmcli_terse_rows_without_enabling_disabled_radios() {

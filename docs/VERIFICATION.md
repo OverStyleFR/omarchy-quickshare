@@ -84,6 +84,14 @@ The locked workspace suite passed **75 tests**, with the consenting physical SDP
 
 A live 45-second visibility cycle exercised the corrected daemon's real BlueZ advertisement/scan schedule, expired normally, retained Bluetooth availability and reported no engine errors. Network consent stayed off and the configuration checksum was unchanged. No LE peer connected during this local smoke; it is not evidence of a new Android file transfer or a universal Realtek firmware fix.
 
+## Existing-LAN priority — 0.2.2 alpha
+
+The locked workspace suite passed **81 tests**, with one consenting physical SDP regression ignored. Consumer-visible regressions cover active physical-interface eligibility, IPv4/subnet boundaries, link health, replacement-channel key proof, withholding file bytes before that proof, and refusing Bluetooth rollback after old-channel drain.
+
+A private runtime peer exercised the real session/UKEY2/sharing implementation. Its bootstrap emulated RFCOMM with a duplex stream; its replacement used actual kernel TCP sockets. The production selector offered the active physical Wi-Fi address on a real interface-bound port without changing the NetworkManager snapshot. A pre-drain failure retained the same bootstrap channel and committed the exact received file. TCP cutover preserved cipher sequences and committed 57 bytes; unrelated old-channel keys, wrong new keys, plaintext and replayed records were rejected without false LAN reporting or file publication. Post-`LAST_WRITE` failure did not send fallback acceptance.
+
+The positive TCP candidate was explicitly staged on loopback because production admission rejects self-address peers. This proves engine negotiation/authentication behavior and actual TCP data handling, not a new native Android or Bluetooth-radio transfer. Temporary runtime modules and runners were removed after observation.
+
 ## Evidence interpretation
 
 Successful transfer means engine completion plus the stated integrity method. A valid media container, a round trip, a capability label or 0/0 bytes alone is not independent destination integrity.

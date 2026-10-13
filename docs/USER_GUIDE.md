@@ -115,6 +115,8 @@ Choose an existing absolute download directory in the panel. The initial destina
 
 Local LAN data uses TCP and mDNS discovery. Bluetooth data uses Classic RFCOMM, with BLE/GATT metadata for discovery.
 
+With backend **0.2.2**, an incoming request may initially connect over Bluetooth, then negotiate the existing LAN after you confirm the code and accept. This uses the current network without enabling Wi-Fi-interruption permission. The card changes to **LAN** only after the replacement connection is authenticated. If that connection cannot be established before cutover, healthy Bluetooth remains the file route; after cutover starts, a failed migration ends the transfer rather than silently resuming it.
+
 The advanced **Allow interrupting my Wi-Fi for a direct connection** setting grants permission for a temporary network change. Leave it off unless you intend that interruption. Permission does not itself establish a direct route. This project does not advertise Wi-Fi Direct/P2P, Google contacts-only visibility, account integration or lossless transfer resume.
 
 Use trusted local networks. Do not expose the service with router port forwarding or disable the firewall globally.

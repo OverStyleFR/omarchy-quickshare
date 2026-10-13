@@ -30,15 +30,21 @@ Selected file paths travel through private stdin pipes and the user's session D-
 
 ## Local transports and authentication
 
-LAN uses mDNS and TCP, default port **47593**. Bluetooth discovery uses BLE/GATT metadata; file content travels through Classic RFCOMM rather than OBEX or GATT characteristics.
+Direct LAN discovery uses mDNS and TCP, default port **47593**. Bluetooth discovery uses BLE/GATT metadata; file content travels through Classic RFCOMM rather than OBEX or GATT characteristics.
 
 The protocol uses UKEY2/P-256 key exchange, authenticated encryption/MAC and message-sequence checks. Names and sizes are introduced for the receiver's consent screen. Device names and Bluetooth addresses are discovery metadata, not authenticated account identity. Verify the displayed code and handle consent explicitly.
+
+Since backend **0.2.2**, accepting an incoming Bluetooth session attempts an existing-LAN upgrade before offering a hotspot, when the peer advertises Wi-Fi LAN support. A read-only NetworkManager snapshot is intersected with live kernel addresses and operational link state. Upgrade hosting admits activated physical Wi-Fi/Ethernet interfaces with usable IPv4 subnets, not software bridges, VLANs, tunnels, link-local or IPv6-only addresses. Each advertised candidate has its own address/interface-bound TCP listener and actual ephemeral port; no profile or Wi-Fi setting is changed.
+
+The LAN offer travels over the authenticated old channel. Public `CLIENT_INTRODUCTION` only routes a single immutable candidate; it is not key proof. Native `LAST_WRITE` / `SAFE_TO_CLOSE` and old-channel terminal shutdown precede replacement-channel traffic. The existing keys and sequence counters continue without reset. Already-authorized sharing acceptance can be encrypted on the replacement, but file sending and the reported LAN medium wait for authenticated replacement-channel input. The ordering follows [Google Nearby's BWU implementation](https://github.com/google/nearby/blob/d128b5fca30b3fa8d4642f8c75dd9e314e090e74/connections/implementation/bwu_manager.cc).
+
+Setup, connection or introduction failure before either old-channel `LAST_WRITE` retains healthy Bluetooth; it does not replace an active Wi-Fi connection with a hotspot. After drain begins, failure is terminal rather than a pretend Bluetooth rollback. A shared SSID or working Internet connection does not prove peer reachability through a firewall or AP client isolation.
 
 Live LE connections hold the radio-coordination gate even when a peer skips reading our GATT metadata. An ordinary-user, unbound HCI socket uses the read-only Linux `HCIGETCONNLIST` ioctl to distinguish LE bearers, including public-address links, from unrelated Classic audio connections. No extra capabilities or privileged Bluetooth monitor are required. Device connection signals wake the coordinator; a passive policy tick also detects LE disappearance when BlueZ's aggregate `Connected` flag remains true for Classic.
 
 Hiding or cancelling a transfer is not disconnect confirmation. Incomplete or unreadable connection snapshots fail closed. Radio errors remain explicit; the service does not reset adapters, disconnect foreign clients or silently retry a transfer. Coordination checks prevent changes while a known LE bearer is live, but are not a guarantee against firmware faults or races with other Bluetooth clients.
 
-Temporary network changes require explicit Wi-Fi-interruption consent. Hosting/joining compatible routes uses NetworkManager-owned profiles and protocol-protected credentials. No Wi-Fi Direct/P2P, WPA3, 6 GHz, Google account/contact identity or lossless resume is advertised.
+Temporary hotspot changes require explicit consent before interrupting an existing Wi-Fi connection. Hosting/joining those routes uses NetworkManager-owned profiles and protocol-protected credentials; existing-LAN upgrades use only read-only interface inspection and owned sockets. No Wi-Fi Direct/P2P, WPA3, 6 GHz, Google account/contact identity or lossless resume is advertised.
 
 ## File publication and cancellation
 

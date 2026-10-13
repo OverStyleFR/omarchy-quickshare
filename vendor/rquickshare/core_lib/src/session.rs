@@ -8,13 +8,15 @@ use crate::crypto::{Crypto, Handshake};
 use crate::hdl::info::TransferMetadata;
 use crate::hdl::{OutboundPayload, State};
 use crate::location_nearby_connections as n;
-use crate::network::{NetworkLease, NetworkManager};
+use crate::network::{LanInterface, NetworkLease, NetworkManager};
 use crate::sharing_nearby as q;
 use crate::storage::IncomingFiles;
 use crate::transport::{FramedStream, TransportStream};
 use crate::utils::{DeviceType, RemoteDeviceInfo};
 use anyhow::{anyhow, bail, ensure, Result};
-use n::bandwidth_upgrade_negotiation_frame::upgrade_path_info::{Medium, WifiHotspotCredentials};
+use n::bandwidth_upgrade_negotiation_frame::upgrade_path_info::{
+    Medium, WifiHotspotCredentials, WifiLanSocket,
+};
 use n::bandwidth_upgrade_negotiation_frame::{
     ClientIntroduction, ClientIntroductionAck, EventType as BwuEvent, UpgradePathInfo,
 };
@@ -72,8 +74,30 @@ struct BytesPayload {
     size: i64,
     bytes: Vec<u8>,
 }
+enum UpgradeListener {
+    Hotspot(TcpListener),
+    Lan(Vec<(LanInterface, TcpListener)>),
+}
+impl UpgradeListener {
+    fn poll_accept(
+        &self,
+        cx: &mut std::task::Context<'_>,
+    ) -> std::task::Poll<std::io::Result<(TcpStream, SocketAddr)>> {
+        match self {
+            Self::Hotspot(listener) => listener.poll_accept(cx),
+            Self::Lan(listeners) => {
+                for (_, listener) in listeners {
+                    if let std::task::Poll::Ready(result) = listener.poll_accept(cx) {
+                        return std::task::Poll::Ready(result);
+                    }
+                }
+                std::task::Poll::Pending
+            }
+        }
+    }
+}
 struct Upgrade {
-    listener: Option<TcpListener>,
+    listener: Option<UpgradeListener>,
     next: Option<FramedStream>,
     lease: Option<NetworkLease>,
     info: UpgradePathInfo,
@@ -110,6 +134,7 @@ pub struct Session {
     upgrade: Option<Upgrade>,
     lease: Option<NetworkLease>,
     pending_accept: bool,
+    pending_lan: bool,
     deferred: Vec<Vec<u8>>,
     lan: bool,
     remote_accepted: bool,
@@ -294,6 +319,7 @@ impl Session {
             upgrade: None,
             lease: None,
             pending_accept: false,
+            pending_lan: false,
             deferred: vec![],
             lan,
             remote_accepted: false,
@@ -708,7 +734,10 @@ impl Session {
             if self.phase == Phase::Done {
                 return Ok(());
             }
-            let sending = self.outbound && self.phase == Phase::Transfer && self.upgrade.is_none();
+            let sending = self.outbound
+                && self.phase == Phase::Transfer
+                && self.upgrade.is_none()
+                && !self.pending_lan;
             let accepting = self
                 .upgrade
                 .as_ref()
@@ -726,7 +755,7 @@ impl Session {
                 msg=self.receiver.recv()=>Input::Message(msg),
                 frame=self.socket.read_frame()=>Input::Frame(frame),
                 _=tick.tick()=>Input::Tick,
-                accepted=async { upgrade_listener.expect("guarded listener").accept().await },if accepting=>Input::Upgrade(accepted),
+                accepted=std::future::poll_fn(|cx| upgrade_listener.expect("guarded listener").poll_accept(cx)),if accepting=>Input::Upgrade(accepted),
             };
             match input {
                 Input::Cancel => {
@@ -920,6 +949,13 @@ impl Session {
                     .as_mut()
                     .ok_or_else(|| anyhow!("missing secure context"))?
                     .open(bytes)?;
+                if self.pending_lan {
+                    // Public introduction routed the socket; only a valid
+                    // continued UKEY2 record authenticates its actual peer.
+                    self.pending_lan = false;
+                    self.transport = "lan".into();
+                    self.restore_state();
+                }
                 let frame = n::OfflineFrame::decode(decrypted.as_slice())?;
                 ensure!(
                     frame.version == Some(n::offline_frame::Version::V1.into()),
@@ -1578,6 +1614,28 @@ impl Session {
         // Resolve preferences at consent, not while an unseen socket connects.
         let download = self.download.read().clone();
         self.incoming = Some(IncomingFiles::create(&download, &self.incoming_metadata)?);
+        if self.transport == "bluetooth" && self.lan {
+            match self.offer_lan().await {
+                Ok(true) => {
+                    self.pending_accept = true;
+                    return Ok(());
+                }
+                Ok(false) => {}
+                Err(error) => {
+                    if self.cancellation.is_cancelled() || self.upgrade.is_some() {
+                        return Err(error);
+                    }
+                    self.diagnostic(format!("LAN upgrade unavailable: {error}"));
+                    // A healthy old channel remains usable; do not replace
+                    // the user's existing Wi-Fi with an AP after LAN failure.
+                    self.share_response(q::connection_response_frame::Status::Accept)
+                        .await?;
+                    self.enter(Phase::Transfer);
+                    self.transition(State::ReceivingFiles);
+                    return Ok(());
+                }
+            }
+        }
         if self.transport == "bluetooth"
             && self.hotspot
             && self.remote_mediums.contains(&(Medium::WifiHotspot as i32))
@@ -1606,8 +1664,8 @@ impl Session {
     }
     async fn send_next(&mut self) -> Result<()> {
         ensure!(
-            self.locally_verified && self.remote_accepted,
-            "file data before local PIN and remote acceptance"
+            self.locally_verified && self.remote_accepted && !self.pending_lan,
+            "file data before local PIN, remote acceptance, or LAN channel authentication"
         );
         let Some((&id, file)) = self.files.iter_mut().find(|(_, f)| !f.last_sent) else {
             self.enter(Phase::Acknowledgments);
@@ -1645,6 +1703,84 @@ impl Session {
         }
         self.progress();
         Ok(())
+    }
+    async fn offer_lan(&mut self) -> Result<bool> {
+        self.checkpoint()?;
+        ensure!(
+            self.locally_verified && self.remote_endpoint.is_some(),
+            "LAN upgrade before local PIN confirmation/endpoint hint"
+        );
+        if !self.lan || !self.remote_mediums.contains(&(Medium::WifiLan as i32)) {
+            return Ok(false);
+        }
+        ensure!(
+            self.upgrade.is_none()
+                && self.lease.is_none()
+                && !self.pending_lan
+                && self.transport == "bluetooth",
+            "upgrade already active"
+        );
+        let candidates = NetworkManager::lan_interfaces(&self.cancellation).await?;
+        self.checkpoint()?;
+        if candidates.is_empty() {
+            return Ok(false);
+        }
+        let mut listeners = Vec::with_capacity(candidates.len());
+        let mut failure = None;
+        for candidate in candidates {
+            let bound = (|| -> Result<TcpListener> {
+                let socket = tokio::net::TcpSocket::new_v4()?;
+                bind_interface(&socket, &candidate.interface)?;
+                socket.bind(SocketAddr::new(IpAddr::V4(candidate.address), 0))?;
+                Ok(socket.listen(1)?)
+            })();
+            match bound {
+                Ok(listener) => listeners.push((candidate, listener)),
+                Err(error) => {
+                    log::debug!(
+                        "LAN listener on {} unavailable: {error}",
+                        candidate.interface
+                    );
+                    failure = Some(error);
+                }
+            }
+        }
+        ensure!(
+            !listeners.is_empty(),
+            "cannot bind an existing LAN interface: {}",
+            failure.expect("all candidates failed")
+        );
+        let mut addresses = Vec::with_capacity(listeners.len());
+        for (candidate, listener) in &listeners {
+            addresses.push(n::ServiceAddress {
+                ip_address: Some(candidate.address.octets().to_vec()),
+                port: Some(i32::from(listener.local_addr()?.port())),
+            });
+        }
+        let info = UpgradePathInfo {
+            medium: Some(Medium::WifiLan as i32),
+            wifi_lan_socket: Some(WifiLanSocket {
+                ip_address: addresses[0].ip_address.clone(),
+                wifi_port: addresses[0].port,
+                address_candidates: addresses,
+            }),
+            supports_client_introduction_ack: Some(true),
+            supports_disabling_encryption: Some(false),
+            ..Default::default()
+        };
+        self.upgrade = Some(Upgrade {
+            listener: Some(UpgradeListener::Lan(listeners)),
+            next: None,
+            lease: None,
+            info: info.clone(),
+            deadline: Instant::now() + Duration::from_secs(30),
+            last_sent: false,
+            last_received: false,
+        });
+        self.transition(State::NegotiatingTransport);
+        self.encrypted(bwu(BwuEvent::UpgradePathAvailable, Some(info)))
+            .await?;
+        Ok(true)
     }
     async fn offer_hotspot(&mut self) -> Result<()> {
         ensure!(
@@ -1694,7 +1830,7 @@ impl Session {
             ..Default::default()
         };
         self.upgrade = Some(Upgrade {
-            listener: Some(listener),
+            listener: Some(UpgradeListener::Hotspot(listener)),
             next: None,
             lease: self.lease.take(),
             info: info.clone(),
@@ -1707,24 +1843,61 @@ impl Session {
     }
     async fn accept_upgrade(&mut self, stream: TcpStream) -> Result<()> {
         self.checkpoint()?;
-        let lease = self
+        let upgrade = self
             .upgrade
             .as_ref()
-            .and_then(|u| u.lease.as_ref())
-            .ok_or_else(|| {
-                anyhow!(
-                    "hosting shared LAN upgrades is unsafe: public introduction has no key proof"
-                )
-            })?;
-        validate_hotspot_peer(
-            &lease.interface,
-            lease.gateway,
-            stream.local_addr()?.ip(),
-            stream.peer_addr()?.ip(),
-        )?;
+            .ok_or_else(|| anyhow!("unexpected upgrade connection"))?;
+        ensure!(upgrade.next.is_none(), "upgrade candidate already selected");
+        if let Some(lease) = upgrade.lease.as_ref() {
+            validate_hotspot_peer(
+                &lease.interface,
+                lease.gateway,
+                stream.local_addr()?.ip(),
+                stream.peer_addr()?.ip(),
+            )?;
+        } else {
+            let Some(UpgradeListener::Lan(listeners)) = upgrade.listener.as_ref() else {
+                bail!("upgrade has no owned LAN listener");
+            };
+            ensure!(upgrade.info.medium() == Medium::WifiLan, "unexpected LAN medium");
+            let local = stream.local_addr()?.ip();
+            let candidate = listeners
+                .iter()
+                .map(|(candidate, _)| candidate)
+                .find(|candidate| local == IpAddr::V4(candidate.address))
+                .ok_or_else(|| anyhow!("upgrade accepted on unadvertised LAN address"))?;
+            let IpAddr::V4(peer) = stream.peer_addr()?.ip() else {
+                bail!("LAN upgrade requires IPv4");
+            };
+            ensure!(
+                shared_subnet(candidate.address, candidate.netmask, peer),
+                "upgrade peer is outside advertised LAN subnet"
+            );
+            ensure!(
+                NetworkManager::lan_interfaces(&self.cancellation)
+                    .await?
+                    .iter()
+                    .any(|current| current == candidate),
+                "advertised LAN interface is no longer active"
+            );
+            ensure!(
+                !if_addrs::get_if_addrs()?.iter().any(|interface| {
+                    matches!(&interface.addr, if_addrs::IfAddr::V4(address) if address.ip == peer)
+                }),
+                "LAN upgrade peer is this computer"
+            );
+        }
+        self.checkpoint()?;
         let mut next = FramedStream::new(Box::new(stream));
-        let bytes = tokio::time::timeout(Duration::from_secs(5), next.read_frame()).await??;
+        let bytes = tokio::select! {
+            _ = self.cancellation.cancelled() => bail!("transfer cancelled"),
+            result = tokio::time::timeout(Duration::from_secs(5), next.read_frame()) => result??,
+        };
         let frame = n::OfflineFrame::decode(bytes.as_slice())?;
+        ensure!(
+            frame.version == Some(n::offline_frame::Version::V1.into()),
+            "invalid upgrade introduction version"
+        );
         let v1 = frame
             .v1
             .ok_or_else(|| anyhow!("missing upgrade introduction"))?;
@@ -1753,7 +1926,10 @@ impl Session {
             .and_then(|v| v.bandwidth_upgrade_negotiation.as_mut())
             .ok_or_else(|| anyhow!("missing ack frame"))?
             .client_introduction_ack = Some(ClientIntroductionAck {});
-        next.write_frame(ack.encode_to_vec()).await?;
+        tokio::select! {
+            _ = self.cancellation.cancelled() => bail!("transfer cancelled"),
+            result = tokio::time::timeout(Duration::from_secs(5), next.write_frame(ack.encode_to_vec())) => result??,
+        }
         self.checkpoint()?;
         ensure!(
             self.upgrade
@@ -1761,14 +1937,15 @@ impl Session {
                 .is_some_and(|u| Instant::now() < u.deadline),
             "upgrade introduction deadline expired"
         );
-        self.upgrade
+        let upgrade = self
+            .upgrade
             .as_mut()
-            .ok_or_else(|| anyhow!("unexpected upgrade connection"))?
-            .next = Some(next);
-        // Google pauses the replacement channel and shares UKEY2 counters with
-        // the old one. No compatible early key-proof exists. Wait for the
-        // authenticated old-channel LAST_WRITE after our introduction ACK;
-        // a public-ID-only candidate cannot force us to commit the migration.
+            .ok_or_else(|| anyhow!("unexpected upgrade connection"))?;
+        upgrade.next = Some(next);
+        upgrade.listener.take();
+        // Freeze one candidate. Native writes are paused until authenticated
+        // old-channel drain finishes; the public introduction is not key proof.
+        // New-channel UKEY2 input must still prove the selected socket's peer.
         Ok(())
     }
     async fn last_write(&mut self) -> Result<()> {
@@ -1867,12 +2044,10 @@ impl Session {
                     .ok_or_else(|| anyhow!("missing upgraded channel"))?;
                 std::mem::swap(&mut self.socket, &mut next);
                 self.lease = upgrade.lease.take();
-                self.transport = if upgrade.info.medium() == Medium::WifiLan {
-                    "lan"
-                } else {
-                    "hotspot"
+                self.pending_lan = upgrade.info.medium() == Medium::WifiLan;
+                if !self.pending_lan {
+                    self.transport = "hotspot".into();
                 }
-                .into();
                 for bytes in std::mem::take(&mut self.deferred) {
                     let encrypted = self
                         .crypto
@@ -1920,6 +2095,10 @@ impl Session {
         Ok(())
     }
     fn restore_state(&mut self) {
+        if self.pending_lan {
+            self.transition(State::NegotiatingTransport);
+            return;
+        }
         let state = match self.phase {
             Phase::Transfer | Phase::Acknowledgments => {
                 if self.outbound {
@@ -1935,6 +2114,10 @@ impl Session {
         self.transition(state);
     }
     async fn fail_upgrade(&mut self) -> Result<()> {
+        ensure!(
+            !self.pending_lan,
+            "LAN channel failed after old-channel drain; restart required"
+        );
         if let Some(upgrade) = self.upgrade.as_ref() {
             ensure!(
                 !upgrade.last_sent && !upgrade.last_received,
@@ -2013,6 +2196,11 @@ impl Session {
             !candidates.is_empty() && candidates.len() <= 8,
             "invalid address candidates"
         );
+        let lan_interfaces = if self.lease.is_none() {
+            NetworkManager::lan_interfaces(&self.cancellation).await?
+        } else {
+            Vec::new()
+        };
         let mut connected = None;
         for candidate in candidates {
             self.checkpoint()?;
@@ -2036,20 +2224,15 @@ impl Session {
             } else {
                 let remote = match candidate.ip() {
                     IpAddr::V4(ip) => ip,
-                    IpAddr::V6(_) => bail!("LAN upgrade requires an IPv4 shared interface"),
+                    IpAddr::V6(_) => continue,
                 };
-                let interface = if_addrs::get_if_addrs()?
-                    .into_iter()
-                    .find_map(|interface| match interface.addr {
-                        if_addrs::IfAddr::V4(address)
-                            if shared_subnet(address.ip, address.netmask, remote) =>
-                        {
-                            Some(interface.name)
-                        }
-                        _ => None,
-                    })
-                    .ok_or_else(|| anyhow!("LAN upgrade has no shared interface"))?;
-                bind_interface(&socket, &interface)?;
+                let Some(interface) = lan_interfaces.iter().find(|interface| {
+                    shared_subnet(interface.address, interface.netmask, remote)
+                }) else {
+                    continue;
+                };
+                bind_interface(&socket, &interface.interface)?;
+                socket.bind(SocketAddr::new(IpAddr::V4(interface.address), 0))?;
             }
             if let Ok(Ok(stream)) =
                 tokio::time::timeout(Duration::from_secs(5), socket.connect(candidate)).await
@@ -3105,5 +3288,116 @@ mod tests {
         ] {
             assert!(!shared_subnet(local, mask, peer.parse().unwrap()));
         }
+    }
+    #[tokio::test]
+    async fn lan_candidate_requires_continuing_key_proof_without_granting_consent() {
+        let (mut session, _socket) = session();
+        let (crypto, mut peer) = pair();
+        session.crypto = Some(crypto);
+        session.enter(Phase::Consent);
+        session.state = State::NegotiatingTransport;
+        session.pending_lan = true;
+        let keepalive = offline(n::V1Frame {
+            r#type: Some(FrameType::KeepAlive.into()),
+            keep_alive: Some(n::KeepAliveFrame { ack: Some(true) }),
+            ..Default::default()
+        })
+        .encode_to_vec();
+        let (_, mut impostor) = pair();
+        for bytes in [
+            keepalive.clone(),
+            impostor.seal(keepalive.clone()).unwrap(),
+        ] {
+            assert!(session.process(&bytes).await.is_err());
+            assert!(session.pending_lan);
+            assert_eq!(session.transport, "bluetooth");
+            assert_eq!(session.state, State::NegotiatingTransport);
+        }
+        let authenticated = peer.seal(keepalive).unwrap();
+        session.process(&authenticated).await.unwrap();
+        assert!(!session.pending_lan);
+        assert_eq!(session.transport, "lan");
+        assert_eq!(session.state, State::WaitingForUserConsent);
+        assert!(!session.locally_verified);
+        assert!(session.incoming.is_none());
+        assert!(session.process(&authenticated).await.is_err());
+    }
+    #[tokio::test]
+    async fn tentative_lan_blocks_file_data_despite_both_consents() {
+        struct Directory(PathBuf);
+        impl Drop for Directory {
+            fn drop(&mut self) {
+                let _ = std::fs::remove_dir_all(&self.0);
+            }
+        }
+        let directory = Directory(std::env::temp_dir().join(format!(
+            "quickshare-lan-proof-test-{}",
+            uuid::Uuid::new_v4()
+        )));
+        std::fs::create_dir(&directory.0).unwrap();
+        let path = directory.0.join("payload.bin");
+        let body = b"File bytes require the replacement channel's key proof";
+        std::fs::write(&path, body).unwrap();
+        let (mut session, mut socket) = session();
+        let (crypto, mut peer) = pair();
+        session.crypto = Some(crypto);
+        session.files.insert(
+            42,
+            SendingFile {
+                metadata: q::FileMetadata {
+                    name: Some("payload.bin".into()),
+                    payload_id: Some(42),
+                    size: Some(body.len() as i64),
+                    ..Default::default()
+                },
+                file: File::open(path).unwrap(),
+                offset: 0,
+                last_sent: false,
+                acknowledged: false,
+            },
+        );
+        session.outbound = true;
+        session.enter(Phase::Transfer);
+        session.locally_verified = true;
+        session.remote_accepted = true;
+        session.pending_lan = true;
+        assert!(session.send_next().await.is_err());
+        assert_eq!(session.files[&42].offset, 0);
+        assert_eq!(session.transport, "bluetooth");
+        let proof = peer
+            .seal(
+                offline(n::V1Frame {
+                    r#type: Some(FrameType::KeepAlive.into()),
+                    keep_alive: Some(n::KeepAliveFrame { ack: Some(true) }),
+                    ..Default::default()
+                })
+                .encode_to_vec(),
+            )
+            .unwrap();
+        session.process(&proof).await.unwrap();
+        session.send_next().await.unwrap();
+        let wire = socket.read_frame().await.unwrap();
+        let plaintext = peer.open(&wire).unwrap();
+        let packet = n::OfflineFrame::decode(plaintext.as_slice())
+            .unwrap()
+            .v1
+            .unwrap()
+            .payload_transfer
+            .unwrap();
+        assert_eq!(packet.payload_chunk.unwrap().body(), body);
+        assert_eq!(session.files[&42].offset, body.len() as i64);
+        assert_eq!(session.transport, "lan");
+    }
+    #[tokio::test]
+    async fn failed_tentative_lan_cannot_resume_the_drained_bluetooth_channel() {
+        let (mut session, _socket) = session();
+        session.enter(Phase::Transfer);
+        session.state = State::NegotiatingTransport;
+        session.pending_lan = true;
+        assert!(session.fail_upgrade().await.is_err());
+        assert!(session.pending_lan);
+        assert_eq!(session.phase, Phase::Transfer);
+        assert_eq!(session.state, State::NegotiatingTransport);
+        assert_eq!(session.transport, "bluetooth");
     }
 }

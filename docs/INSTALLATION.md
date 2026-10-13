@@ -26,7 +26,7 @@ Do not run these operations as root. Any necessary system-package authorization 
 | --- | --- |
 | Desktop | Omarchy, Quickshell, session D-Bus, systemd user manager, `jq` |
 | Bluetooth | BlueZ with a Classic/BLE-capable adapter and normal user permissions |
-| Local networking | A usable local interface; NetworkManager for managed network changes |
+| Local networking | A usable local interface; NetworkManager for read-only upgrade selection and managed network changes |
 | Shared IPv4/AP support | `dnsmasq`, invoked by NetworkManager when needed |
 | File picker | `xdg-desktop-portal` and a FileChooser backend, such as `xdg-desktop-portal-gtk` |
 | Nautilus action | `nautilus`, `nautilus-python`, `python-gobject`, `gtk4` |
@@ -34,6 +34,8 @@ Do not run these operations as root. Any necessary system-package authorization 
 | Local Arch package build | `base-devel`, `makepkg`, `git` and the source compilation dependencies |
 
 NetworkManager starts its own `dnsmasq` for shared IPv4. Do **not** enable `dnsmasq.service` just for Quick Share. Setup must not globally disable a firewall or overwrite Omarchy's package-owned desktop files.
+
+Direct LAN discovery needs mDNS UDP **5353** and the configured TCP listener, normally **47593**, on the trusted local network. Existing-LAN bandwidth upgrades also advertise per-session TCP ports bound to the actual physical interface/address. Firewall and access-point policy must permit peer access to those advertised ports; setup does not add firewall rules, enable router forwarding or weaken network policy.
 
 ## First setup
 
@@ -68,6 +70,8 @@ omarchy plugin update macondo.quickshare
 The native updater follows the repository's stable `main` channel, including **v0.2.0** and its optional transfer effects. Then open **Settings** in the panel and choose **Update service** in the **Service** section when you want to update the backend to the release supplied by the current checkout. Source mode rebuilds the current locked checkout; package mode creates and installs the corresponding Arch package with local authorization. Do not claim the daemon is updated merely because the QML checkout changed.
 
 Backend **0.1.2 or newer** supports the private file-selection handoff and the UI-only transfer effects; effects alone do not require a backend upgrade. A 0.1.1 or older backend displays **Service update required**; update the service as well as the native plugin before sharing files. Restart Nautilus after saving work so its process loads the updated extension.
+
+Incoming LAN-first negotiation requires backend **0.2.2**, currently on the **alpha** branch. Updating QML or reloading the shell alone does not update the running daemon. The stable `main` channel and marketplace snapshot are separate from alpha; use the matching checkout's service setup when testing it.
 
 If Omarchy keeps a previously loaded component after a plugin update, use `omarchy restart shell` before opening its updated controls. Shell reload does not itself cancel the independent daemon's transfers, but service maintenance still requires them to end first.
 
