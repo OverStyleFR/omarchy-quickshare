@@ -639,7 +639,7 @@ Ui.Panel {
             Layout.fillWidth: true
             spacing: Style.space(10)
             SectionCard {
-              Ui.PanelSectionHeader { text: root.tr("ALPHA · TRANSFER EFFECTS", "ALPHA · EFECTOS DE TRANSFERENCIA"); foreground: root.foreground }
+              Ui.PanelSectionHeader { text: root.tr("TRANSFER EFFECTS", "EFECTOS DE TRANSFERENCIA"); foreground: root.foreground }
               Ui.Toggle {
                 Layout.fillWidth: true
                 label: root.tr("Animated transfer companion", "Acompañante de transferencia animado")

@@ -3,7 +3,7 @@ import Quickshell
 import Quickshell.Wayland
 import qs.Commons
 
-// Alpha presentation only: no commands, radio decisions, or transfer mutation.
+// Presentation only: no commands, radio decisions, or transfer mutation.
 Scope {
   id: root
   property bool enabled: false
@@ -115,7 +115,7 @@ Scope {
     margins { top: root.surfaceRect.y; left: root.surfaceRect.x }
     implicitWidth: Math.round(root.surfaceRect.width)
     implicitHeight: Math.round(root.surfaceRect.height)
-    WlrLayershell.namespace: "omarchy-quickshare-alpha-effects"
+    WlrLayershell.namespace: "omarchy-quickshare-effects"
     WlrLayershell.layer: WlrLayer.Overlay
     WlrLayershell.keyboardFocus: WlrKeyboardFocus.None
     // An explicit empty input region, not the window's default full region.

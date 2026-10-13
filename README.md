@@ -1,7 +1,5 @@
 # Omarchy Quick Share
 
-**Alpha branch — opt-in transfer effects.** This channel adds themed layer-shell halos and a small transfer companion. It is not a marketplace release; `main` remains the approved stable channel. Open **Settings → Alpha transfer effects** to enable animations (off by default), then use the eight-second visual previews. See [alpha setup and rollback](docs/INSTALLATION.md#alpha-channel).
-
 **Android Quick Share, right in your Omarchy desktop.**
 
 Send photos, videos and files between your Android phone and Omarchy using the phone's existing **Quick Share**. Use a local network for file sharing or Bluetooth when a shared network is unavailable. No companion Android app is required.
@@ -14,6 +12,7 @@ Send photos, videos and files between your Android phone and Omarchy using the p
 - **One file or a whole selection:** send from the panel or Nautilus's **Send via Quick Share** menu.
 - **Stay in control:** compare the code, approve incoming files, follow progress and cancel explicitly.
 - **English or Español:** choose your language in the panel.
+- **Optional transfer effects:** in **Settings → Transfer effects**, enable **Animated transfer companion** (off by default). Try an eight-second visual preview without sending files. See the [user guide](docs/USER_GUIDE.md#transfer-effects).
 
 See the [pictured user guide](docs/USER_GUIDE.md) for the full walkthrough.
 

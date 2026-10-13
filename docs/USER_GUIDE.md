@@ -91,18 +91,18 @@ If the service is missing or incompatible, setup controls appear automatically. 
 
 Finish or cancel active transfers before service maintenance. If a plugin update leaves the previous panel controls on screen, run `omarchy restart shell` to reload Quickshell; this does not restart the independent transfer service.
 
-## Alpha transfer effects
+## Transfer effects
 
-On the `alpha` branch, open **Settings → Alpha transfer effects** and enable **Animated transfer companion**. The preference is off by default and persists across shell reloads.
+Since **v0.2.0**, open **Settings → Transfer effects** and enable **Animated transfer companion**. The preference is off by default; your saved choice persists across shell reloads and plugin updates.
 
 - Preparation/connection uses orbiting signal beacons; active file sending uses outgoing paper packets; receiving uses inward packets and rings.
 - Confirmed **Wi-Fi / LAN**, **Bluetooth** and **Direct Wi-Fi / hotspot** have different motifs. An unconfirmed transport stays neutral rather than guessing from radio availability.
 - With the panel open, the halo stays outside the card and its safety margin. Closing the panel moves the activity to a small courier companion near the bar.
 - The overlay does not accept pointer or keyboard input. Turning it off immediately removes the overlay and animation clock.
 
-To try the visuals without a phone, choose **Preview activity** and **Preview transport**, then **Preview · 8 s**. **Stop** ends it immediately. Preview does not send files, accept a PIN, modify the real transfer model or change network permission. Real active transfers take priority.
+To try the visuals without a phone, choose **Preview activity** and **Preview transport**, then **Preview · 8 s**. **Stop** ends it immediately. These eight-second previews perform no file or network transfer, accept no PIN, and do not modify the real transfer model or network permission. Real active transfers take priority.
 
-The alpha UI uses the unchanged **0.1.2** backend. [Installation](INSTALLATION.md#alpha-channel) explains switching channels and returning to stable.
+Transfer effects are a UI feature compatible with backend **0.1.2 or newer**; enabling them does not install or restart a service. See [Installation and maintenance](INSTALLATION.md#update) for native plugin updates and explicit service maintenance.
 
 
 ## Language and destination

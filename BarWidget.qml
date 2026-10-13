@@ -8,6 +8,38 @@ Ui.BarIconButton {
   property var manifest: null
   property var settings: ({})
   readonly property var service: shell ? shell.serviceFor("macondo.quickshare") : null
+  property var effectsRegisteredService: null
+  function registerEffectsAnchor() {
+    var previous = effectsRegisteredService
+    effectsRegisteredService = service
+    if (previous && previous !== service && previous.panelAnchor === root) {
+      previous.panelBar = null
+      previous.panelAnchor = null
+    }
+    if (!service) return
+    if (!bar && service.panelAnchor === root) {
+      service.panelBar = null
+      service.panelAnchor = null
+    } else if (bar && (!service.panelAnchor || service.panelAnchor === root)) {
+      service.panelBar = bar
+      service.panelAnchor = root
+    }
+  }
+  onServiceChanged: registerEffectsAnchor()
+  onBarChanged: registerEffectsAnchor()
+  Component.onCompleted: registerEffectsAnchor()
+  Component.onDestruction: {
+    var previous = effectsRegisteredService
+    effectsRegisteredService = null
+    if (previous && previous.panelAnchor === root) {
+      previous.panelBar = null
+      previous.panelAnchor = null
+    }
+  }
+  Connections {
+    target: root.effectsRegisteredService
+    function onPanelAnchorChanged() { root.registerEffectsAnchor() }
+  }
   readonly property bool incoming: service && service.transfers.some(function(t) {
     return t.direction === "inbound" && t.state === "waiting_acceptance"
   })

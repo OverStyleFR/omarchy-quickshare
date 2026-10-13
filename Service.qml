@@ -337,7 +337,7 @@ Item {
       item.language = Qt.binding(function() { return root.language })
     }
     onStatusChanged: if (status === Loader.Error)
-      root.fail("Cannot load Alpha transfer animations.", "No se pudieron cargar las animaciones Alpha.")
+      root.fail("Cannot load transfer animations.", "No se pudieron cargar las animaciones de transferencia.")
   }
   Timer {
     interval: 1000

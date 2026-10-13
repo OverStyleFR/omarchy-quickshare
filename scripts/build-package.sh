@@ -7,7 +7,7 @@ WORK_BASE=${TMPDIR:-${XDG_CACHE_HOME:-$HOME/.cache}}
 mkdir -p -- "$WORK_BASE"
 WORK=$(mktemp -d "$WORK_BASE/omarchy-quickshare-package.XXXXXXXX")
 trap 'rm -rf -- "$WORK"' EXIT
-VERSION=0.1.2
+VERSION=0.2.0
 OUTPUT_DIR=${QUICKSHARE_PACKAGE_OUTPUT:-$ROOT/dist}
 command -v makepkg >/dev/null || { printf 'Falta makepkg.\n' >&2; exit 1; }
 [[ -f "$ROOT/Cargo.lock" ]] || { printf 'Falta Cargo.lock; genera y verifica primero la compilación.\n' >&2; exit 1; }
@@ -16,7 +16,7 @@ command -v makepkg >/dev/null || { printf 'Falta makepkg.\n' >&2; exit 1; }
 # source snapshot reproducible. No build artifacts enter the archive.
 LC_ALL=C tar --sort=name --mtime="@${SOURCE_DATE_EPOCH:-0}" --owner=0 --group=0 --numeric-owner \
   --format=gnu -cf - \
-  --exclude='target' --exclude='bindings' --exclude='.git' \
+  --exclude='target' --exclude='bindings' --exclude='.git' --exclude='__pycache__' --exclude='*.pyc' \
   --transform="s,^,omarchy-quickshare-$VERSION/," \
   -C "$ROOT" Cargo.toml Cargo.lock src vendor manifest.json Service.qml BarWidget.qml Panel.qml TransferEffects.qml TransferEffectsArt.qml nautilus packaging scripts LICENSE README.md preview.png CONTRIBUTING.md CODE_OF_CONDUCT.md SECURITY.md docs |
   gzip -n > "$WORK/omarchy-quickshare-$VERSION.tar.gz"
