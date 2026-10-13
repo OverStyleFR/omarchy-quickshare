@@ -7,6 +7,7 @@ use crate::channel::{ChannelAction, ChannelDirection, ChannelMessage, TransferTy
 use crate::crypto::{Crypto, Handshake};
 use crate::hdl::info::TransferMetadata;
 use crate::hdl::{OutboundPayload, State};
+use crate::lan_upgrade::{LanUpgradeHost, LanUpgradeRegistration};
 use crate::location_nearby_connections as n;
 use crate::network::{LanInterface, NetworkLease, NetworkManager};
 use crate::sharing_nearby as q;
@@ -76,22 +77,21 @@ struct BytesPayload {
 }
 enum UpgradeListener {
     Hotspot(TcpListener),
-    Lan(Vec<(LanInterface, TcpListener)>),
+    Lan(LanUpgradeRegistration, Vec<LanInterface>),
 }
 impl UpgradeListener {
-    fn poll_accept(
-        &self,
-        cx: &mut std::task::Context<'_>,
-    ) -> std::task::Poll<std::io::Result<(TcpStream, SocketAddr)>> {
+    async fn accept(&mut self) -> Result<(TcpStream, Option<ClientIntroduction>)> {
         match self {
-            Self::Hotspot(listener) => listener.poll_accept(cx),
-            Self::Lan(listeners) => {
-                for (_, listener) in listeners {
-                    if let std::task::Poll::Ready(result) = listener.poll_accept(cx) {
-                        return std::task::Poll::Ready(result);
-                    }
-                }
-                std::task::Poll::Pending
+            Self::Hotspot(listener) => {
+                let (stream, _) = listener.accept().await?;
+                Ok((stream, None))
+            }
+            Self::Lan(registration, _) => {
+                let candidate = registration
+                    .recv()
+                    .await
+                    .ok_or_else(|| anyhow!("LAN upgrade admission closed"))?;
+                Ok((candidate.stream, Some(candidate.introduction)))
             }
         }
     }
@@ -114,6 +114,7 @@ pub struct Session {
     remote_endpoint: Option<String>,
     local_name: String,
     socket: FramedStream,
+    initial_request: Option<n::ConnectionRequestFrame>,
     phase: Phase,
     handshake: Option<Handshake>,
     crypto: Option<Crypto>,
@@ -137,6 +138,7 @@ pub struct Session {
     pending_lan: bool,
     deferred: Vec<Vec<u8>>,
     lan: bool,
+    lan_upgrade_host: Option<LanUpgradeHost>,
     remote_accepted: bool,
     remote_disconnect_version: i32,
     close_deadline: Option<Instant>,
@@ -196,7 +198,7 @@ fn response() -> n::OfflineFrame {
 }
 impl Session {
     #[allow(clippy::too_many_arguments)]
-    pub fn new(
+    pub(crate) fn new(
         id: String,
         stream: TransportStream,
         transport: &str,
@@ -209,6 +211,7 @@ impl Session {
         consent: Arc<AtomicBool>,
         outgoing: Option<OutboundPayload>,
         remote_endpoint: Option<String>,
+        lan_upgrade_host: Option<LanUpgradeHost>,
     ) -> Result<Self> {
         let receiver = sender.subscribe();
         let outbound = outgoing.is_some();
@@ -295,6 +298,7 @@ impl Session {
             remote_endpoint,
             local_name: name,
             socket: FramedStream::new(stream),
+            initial_request: None,
             phase: if outbound {
                 Phase::ServerInit
             } else {
@@ -322,6 +326,7 @@ impl Session {
             pending_lan: false,
             deferred: vec![],
             lan,
+            lan_upgrade_host,
             remote_accepted: false,
             remote_disconnect_version: 0,
             close_deadline: None,
@@ -333,6 +338,9 @@ impl Session {
             cancellation: CancellationToken::new(),
             pending_file: None,
         })
+    }
+    pub(crate) fn set_initial_request(&mut self, request: n::ConnectionRequestFrame) {
+        self.initial_request = Some(request);
     }
     pub fn event(&self, error: Option<String>) {
         let meta = if matches!(self.state, State::SendingFiles | State::ReceivingFiles) {
@@ -728,6 +736,10 @@ impl Session {
     }
     async fn drive(&mut self, ctk: CancellationToken) -> Result<()> {
         self.start().await?;
+        if let Some(request) = self.initial_request.take() {
+            self.checkpoint()?;
+            self.process_connection_request(request)?;
+        }
         let mut tick = tokio::time::interval(Duration::from_millis(10));
         tick.set_missed_tick_behavior(tokio::time::MissedTickBehavior::Skip);
         loop {
@@ -742,20 +754,20 @@ impl Session {
                 .upgrade
                 .as_ref()
                 .is_some_and(|u| u.listener.is_some() && u.next.is_none());
-            let upgrade_listener = self.upgrade.as_ref().and_then(|u| u.listener.as_ref());
+            let upgrade_listener = self.upgrade.as_mut().and_then(|u| u.listener.as_mut());
             enum Input {
                 Cancel,
                 Message(Result<ChannelMessage, broadcast::error::RecvError>),
                 Frame(Result<Vec<u8>>),
                 Tick,
-                Upgrade(Result<(TcpStream, SocketAddr), std::io::Error>),
+                Upgrade(Result<(TcpStream, Option<ClientIntroduction>)>),
             }
             let input = tokio::select! {
                 _=ctk.cancelled()=>Input::Cancel,
                 msg=self.receiver.recv()=>Input::Message(msg),
                 frame=self.socket.read_frame()=>Input::Frame(frame),
                 _=tick.tick()=>Input::Tick,
-                accepted=std::future::poll_fn(|cx| upgrade_listener.expect("guarded listener").poll_accept(cx)),if accepting=>Input::Upgrade(accepted),
+                accepted=async {upgrade_listener.expect("guarded listener").accept().await},if accepting=>Input::Upgrade(accepted),
             };
             match input {
                 Input::Cancel => {
@@ -811,13 +823,9 @@ impl Session {
                     Err(error) => return Err(error),
                 },
                 Input::Upgrade(accepted) => {
-                    let (stream, address) = accepted?;
+                    let (stream, introduction) = accepted?;
                     self.checkpoint()?;
-                    ensure!(
-                        stream.peer_addr()? == address,
-                        "upgrade peer address changed"
-                    );
-                    if let Err(error) = self.accept_upgrade(stream).await {
+                    if let Err(error) = self.accept_upgrade(stream, introduction).await {
                         if self.upgrade.as_ref().is_some_and(|u| u.next.is_some()) {
                             return Err(error);
                         }
@@ -852,6 +860,27 @@ impl Session {
             .await
             .map_err(|error| anyhow!("session frame rejected: phase={phase:?}: {error}"))
     }
+    fn process_connection_request(&mut self, mut request: n::ConnectionRequestFrame) -> Result<()> {
+        ensure!(self.phase == Phase::Connection, "unexpected connection request");
+        ensure!(
+            request.endpoint_id().len() == 4,
+            "invalid remote endpoint id"
+        );
+        self.remote_endpoint = request.endpoint_id.take();
+        self.remote_mediums = std::mem::take(&mut request.mediums);
+        let info = request.endpoint_info();
+        ensure!(
+            info.len() >= 18 && info.len() >= 18 + info[17] as usize,
+            "invalid endpoint info"
+        );
+        self.metadata.source = Some(RemoteDeviceInfo {
+            name: std::str::from_utf8(&info[18..18 + info[17] as usize])?.into(),
+            device_type: DeviceType::from_raw_value((info[0] >> 1) & 7),
+        });
+        self.phase = Phase::ClientInit;
+        self.transition(State::ReceivedConnectionRequest);
+        Ok(())
+    }
     async fn process_frame(&mut self, bytes: &[u8]) -> Result<()> {
         match self.phase {
             Phase::Connection => {
@@ -868,23 +897,7 @@ impl Session {
                 let request = v1
                     .connection_request
                     .ok_or_else(|| anyhow!("missing connection request body"))?;
-                ensure!(
-                    request.endpoint_id().len() == 4,
-                    "invalid remote endpoint id"
-                );
-                self.remote_endpoint = Some(request.endpoint_id().into());
-                self.remote_mediums = request.mediums.clone();
-                let info = request.endpoint_info();
-                ensure!(
-                    info.len() >= 18 && info.len() >= 18 + info[17] as usize,
-                    "invalid endpoint info"
-                );
-                self.metadata.source = Some(RemoteDeviceInfo {
-                    name: std::str::from_utf8(&info[18..18 + info[17] as usize])?.into(),
-                    device_type: DeviceType::from_raw_value((info[0] >> 1) & 7),
-                });
-                self.phase = Phase::ClientInit;
-                self.transition(State::ReceivedConnectionRequest);
+                self.process_connection_request(request)?;
             }
             Phase::ClientInit => {
                 let (hs, response) = Handshake::server(bytes)?;
@@ -1720,43 +1733,26 @@ impl Session {
                 && self.transport == "bluetooth",
             "upgrade already active"
         );
+        let Some(host) = self.lan_upgrade_host.as_ref() else {
+            return Ok(false);
+        };
         let candidates = NetworkManager::lan_interfaces(&self.cancellation).await?;
         self.checkpoint()?;
         if candidates.is_empty() {
             return Ok(false);
         }
-        let mut listeners = Vec::with_capacity(candidates.len());
-        let mut failure = None;
-        for candidate in candidates {
-            let bound = (|| -> Result<TcpListener> {
-                let socket = tokio::net::TcpSocket::new_v4()?;
-                bind_interface(&socket, &candidate.interface)?;
-                socket.bind(SocketAddr::new(IpAddr::V4(candidate.address), 0))?;
-                Ok(socket.listen(1)?)
-            })();
-            match bound {
-                Ok(listener) => listeners.push((candidate, listener)),
-                Err(error) => {
-                    log::debug!(
-                        "LAN listener on {} unavailable: {error}",
-                        candidate.interface
-                    );
-                    failure = Some(error);
-                }
-            }
-        }
-        ensure!(
-            !listeners.is_empty(),
-            "cannot bind an existing LAN interface: {}",
-            failure.expect("all candidates failed")
-        );
-        let mut addresses = Vec::with_capacity(listeners.len());
-        for (candidate, listener) in &listeners {
-            addresses.push(n::ServiceAddress {
+        let registration = host.register(
+            self.remote_endpoint
+                .as_deref()
+                .ok_or_else(|| anyhow!("missing upgrade endpoint"))?,
+        )?;
+        let addresses: Vec<_> = candidates
+            .iter()
+            .map(|candidate| n::ServiceAddress {
                 ip_address: Some(candidate.address.octets().to_vec()),
-                port: Some(i32::from(listener.local_addr()?.port())),
-            });
-        }
+                port: Some(i32::from(host.port())),
+            })
+            .collect();
         let info = UpgradePathInfo {
             medium: Some(Medium::WifiLan as i32),
             wifi_lan_socket: Some(WifiLanSocket {
@@ -1769,7 +1765,7 @@ impl Session {
             ..Default::default()
         };
         self.upgrade = Some(Upgrade {
-            listener: Some(UpgradeListener::Lan(listeners)),
+            listener: Some(UpgradeListener::Lan(registration, candidates)),
             next: None,
             lease: None,
             info: info.clone(),
@@ -1841,7 +1837,11 @@ impl Session {
         self.encrypted(bwu(BwuEvent::UpgradePathAvailable, Some(info)))
             .await
     }
-    async fn accept_upgrade(&mut self, stream: TcpStream) -> Result<()> {
+    async fn accept_upgrade(
+        &mut self,
+        stream: TcpStream,
+        introduction: Option<ClientIntroduction>,
+    ) -> Result<()> {
         self.checkpoint()?;
         let upgrade = self
             .upgrade
@@ -1856,14 +1856,13 @@ impl Session {
                 stream.peer_addr()?.ip(),
             )?;
         } else {
-            let Some(UpgradeListener::Lan(listeners)) = upgrade.listener.as_ref() else {
-                bail!("upgrade has no owned LAN listener");
+            let Some(UpgradeListener::Lan(_, candidates)) = upgrade.listener.as_ref() else {
+                bail!("upgrade has no owned LAN admission");
             };
             ensure!(upgrade.info.medium() == Medium::WifiLan, "unexpected LAN medium");
             let local = stream.local_addr()?.ip();
-            let candidate = listeners
+            let candidate = candidates
                 .iter()
-                .map(|(candidate, _)| candidate)
                 .find(|candidate| local == IpAddr::V4(candidate.address))
                 .ok_or_else(|| anyhow!("upgrade accepted on unadvertised LAN address"))?;
             let IpAddr::V4(peer) = stream.peer_addr()?.ip() else {
@@ -1886,35 +1885,48 @@ impl Session {
                 }),
                 "LAN upgrade peer is this computer"
             );
+            ensure!(
+                introduction.is_some()
+                    && self
+                        .lan_upgrade_host
+                        .as_ref()
+                        .is_some_and(|host| stream.local_addr().is_ok_and(|address| address.port() == host.port())),
+                "upgrade arrived outside the shared LAN listener"
+            );
+            bind_interface(&stream, &candidate.interface)?;
         }
         self.checkpoint()?;
         let mut next = FramedStream::new(Box::new(stream));
-        let bytes = tokio::select! {
-            _ = self.cancellation.cancelled() => bail!("transfer cancelled"),
-            result = tokio::time::timeout(Duration::from_secs(5), next.read_frame()) => result??,
+        let intro = if let Some(introduction) = introduction {
+            introduction
+        } else {
+            let bytes = tokio::select! {
+                _ = self.cancellation.cancelled() => bail!("transfer cancelled"),
+                result = tokio::time::timeout(Duration::from_secs(5), next.read_frame()) => result??,
+            };
+            let frame = n::OfflineFrame::decode(bytes.as_slice())?;
+            ensure!(
+                frame.version == Some(n::offline_frame::Version::V1.into()),
+                "invalid upgrade introduction version"
+            );
+            let v1 = frame
+                .v1
+                .ok_or_else(|| anyhow!("missing upgrade introduction"))?;
+            ensure!(
+                v1.r#type() == FrameType::BandwidthUpgradeNegotiation,
+                "invalid upgrade introduction type"
+            );
+            let intro = v1
+                .bandwidth_upgrade_negotiation
+                .ok_or_else(|| anyhow!("missing upgrade introduction"))?;
+            ensure!(
+                intro.event_type() == BwuEvent::ClientIntroduction,
+                "expected upgrade client introduction"
+            );
+            intro
+                .client_introduction
+                .ok_or_else(|| anyhow!("missing endpoint introduction"))?
         };
-        let frame = n::OfflineFrame::decode(bytes.as_slice())?;
-        ensure!(
-            frame.version == Some(n::offline_frame::Version::V1.into()),
-            "invalid upgrade introduction version"
-        );
-        let v1 = frame
-            .v1
-            .ok_or_else(|| anyhow!("missing upgrade introduction"))?;
-        ensure!(
-            v1.r#type() == FrameType::BandwidthUpgradeNegotiation,
-            "invalid upgrade introduction type"
-        );
-        let intro = v1
-            .bandwidth_upgrade_negotiation
-            .ok_or_else(|| anyhow!("missing upgrade introduction"))?;
-        ensure!(
-            intro.event_type() == BwuEvent::ClientIntroduction,
-            "expected upgrade client introduction"
-        );
-        let intro = intro
-            .client_introduction
-            .ok_or_else(|| anyhow!("missing endpoint introduction"))?;
         ensure!(
             self.remote_endpoint.as_deref() == Some(intro.endpoint_id())
                 && !intro.supports_disabling_encryption(),
@@ -1942,6 +1954,9 @@ impl Session {
             .as_mut()
             .ok_or_else(|| anyhow!("unexpected upgrade connection"))?;
         upgrade.next = Some(next);
+        if let Some(UpgradeListener::Lan(registration, _)) = upgrade.listener.as_mut() {
+            registration.close_admission();
+        }
         upgrade.listener.take();
         // Freeze one candidate. Native writes are paused until authenticated
         // old-channel drain finishes; the public introduction is not key proof.
@@ -2279,8 +2294,7 @@ impl Session {
         self.last_write().await
     }
 }
-fn bind_interface(socket: &tokio::net::TcpSocket, interface: &str) -> Result<()> {
-    use std::os::fd::AsRawFd;
+fn bind_interface(socket: &impl std::os::fd::AsRawFd, interface: &str) -> Result<()> {
     let interface = std::ffi::CString::new(interface)?;
     let result = unsafe {
         libc::setsockopt(
@@ -2387,6 +2401,7 @@ mod tests {
             Arc::new(AtomicBool::new(false)),
             None,
             Some("PEER".into()),
+            None,
         )
         .unwrap();
         (session, FramedStream::new(Box::new(remote)))
@@ -3165,6 +3180,7 @@ mod tests {
             false,
             false,
             Arc::new(AtomicBool::new(false)),
+            None,
             None,
             None,
         )

@@ -17,34 +17,23 @@ struct PendingFrame {
     body_written: usize,
 }
 
-#[derive(Debug)]
-pub struct FramedStream {
-    pub stream: TransportStream,
+#[derive(Debug, Default)]
+pub(crate) struct FrameReader {
     prefix: [u8; 4],
     prefix_read: usize,
     body: Vec<u8>,
     body_read: usize,
-    pending_write: Option<PendingFrame>,
 }
-impl FramedStream {
-    pub fn new(stream: TransportStream) -> Self {
-        Self {
-            stream,
-            prefix: [0; 4],
-            prefix_read: 0,
-            body: Vec::new(),
-            body_read: 0,
-            pending_write: None,
-        }
-    }
+
+impl FrameReader {
     // read(), unlike read_exact(), is cancellation-safe. Cursor state remains
     // attached to the channel while a consent/cancel event wins a select!.
-    pub async fn read_frame(&mut self) -> Result<Vec<u8>> {
+    pub(crate) async fn read_frame<T: AsyncRead + Unpin + ?Sized>(
+        &mut self,
+        stream: &mut T,
+    ) -> Result<Vec<u8>> {
         while self.prefix_read < 4 {
-            let n = self
-                .stream
-                .read(&mut self.prefix[self.prefix_read..])
-                .await?;
+            let n = stream.read(&mut self.prefix[self.prefix_read..]).await?;
             if n == 0 {
                 bail!("peer closed transport");
             }
@@ -58,7 +47,7 @@ impl FramedStream {
             self.body.resize(size, 0);
         }
         while self.body_read < self.body.len() {
-            let n = self.stream.read(&mut self.body[self.body_read..]).await?;
+            let n = stream.read(&mut self.body[self.body_read..]).await?;
             if n == 0 {
                 bail!("peer closed mid-frame");
             }
@@ -68,6 +57,28 @@ impl FramedStream {
         self.body_read = 0;
         Ok(std::mem::take(&mut self.body))
     }
+}
+
+#[derive(Debug)]
+pub struct FramedStream {
+    pub stream: TransportStream,
+    reader: FrameReader,
+    pending_write: Option<PendingFrame>,
+}
+
+impl FramedStream {
+    pub fn new(stream: TransportStream) -> Self {
+        Self {
+            stream,
+            reader: FrameReader::default(),
+            pending_write: None,
+        }
+    }
+
+    pub async fn read_frame(&mut self) -> Result<Vec<u8>> {
+        self.reader.read_frame(&mut self.stream).await
+    }
+
     /// Retains the frame before a cancellation select can skip polling its
     /// writer. This also preserves the ciphertext's already-assigned sequence.
     pub fn queue_frame(&mut self, bytes: Vec<u8>) -> Result<()> {
@@ -150,6 +161,58 @@ mod tests {
     };
     use std::task::{Context, Poll};
     use tokio::io::{DuplexStream, ReadBuf};
+
+    #[tokio::test]
+    async fn canceled_first_frame_reads_preserve_consecutive_frames_at_handoff() {
+        let (mut stream, mut peer) = tokio::io::duplex(64);
+        let mut reader = FrameReader::default();
+        let first: Vec<u8> = (0..19).collect();
+        let second = vec![91, 92, 93];
+        let prefix = (first.len() as u32).to_be_bytes();
+
+        peer.write_all(&prefix[..2]).await.unwrap();
+        {
+            let interrupted = reader.read_frame(&mut stream);
+            tokio::pin!(interrupted);
+            poll_fn(|cx| {
+                assert!(interrupted.as_mut().poll(cx).is_pending());
+                Poll::Ready(())
+            })
+            .await;
+        }
+
+        peer.write_all(&prefix[2..]).await.unwrap();
+        peer.write_all(&first[..7]).await.unwrap();
+        {
+            let interrupted = reader.read_frame(&mut stream);
+            tokio::pin!(interrupted);
+            poll_fn(|cx| {
+                assert!(interrupted.as_mut().poll(cx).is_pending());
+                Poll::Ready(())
+            })
+            .await;
+        }
+
+        peer.write_all(&first[7..]).await.unwrap();
+        peer.write_all(&(second.len() as u32).to_be_bytes())
+            .await
+            .unwrap();
+        peer.write_all(&second).await.unwrap();
+        assert_eq!(reader.read_frame(&mut stream).await.unwrap(), first);
+
+        // Classification consumes only its first frame. A fresh session reader
+        // must receive the next frame intact from the same, unboxed stream.
+        let mut session = FramedStream::new(Box::new(stream));
+        assert_eq!(session.read_frame().await.unwrap(), second);
+        let mut extra = [0];
+        let trailing = session.stream.read(&mut extra);
+        tokio::pin!(trailing);
+        poll_fn(|cx| {
+            assert!(trailing.as_mut().poll(cx).is_pending());
+            Poll::Ready(())
+        })
+        .await;
+    }
 
     #[tokio::test]
     async fn abandoned_writes_resume_exact_frames_under_backpressure() {

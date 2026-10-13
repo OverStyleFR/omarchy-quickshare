@@ -21,6 +21,7 @@ mod bluetooth;
 pub mod channel;
 mod crypto;
 mod hdl;
+mod lan_upgrade;
 mod manager;
 mod network;
 mod session;
@@ -222,6 +223,12 @@ impl RQS {
             });
         }
         let (send_sender, send_receiver) = mpsc::channel(16);
+        let lan_upgrade_host = match &listener {
+            Some(listener) => Some(lan_upgrade::LanUpgradeHost::new(
+                listener.local_addr()?.port(),
+            )),
+            None => None,
+        };
         let manager = Manager {
             endpoint,
             name,
@@ -232,6 +239,7 @@ impl RQS {
             lan: self.options.lan,
             hotspot: self.options.hotspot,
             routes: self.routes.clone(),
+            lan_upgrade_host,
             #[cfg(target_os = "linux")]
             bluetooth: self.bluetooth.clone(),
         };

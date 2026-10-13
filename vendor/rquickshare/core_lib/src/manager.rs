@@ -1,11 +1,14 @@
 use crate::{
     channel::{ChannelAction, ChannelDirection, ChannelMessage, TransferType},
     hdl::{OutboundPayload, State, Visibility},
+    lan_upgrade::{LanCandidate, LanUpgradeHost},
+    location_nearby_connections as n,
     session::Session,
-    transport::TransportStream,
+    transport::{FrameReader, TransportStream},
 };
-use anyhow::Result;
+use anyhow::{anyhow, ensure, Result};
 use parking_lot::RwLock;
+use prost::Message;
 use std::collections::HashMap;
 use std::path::PathBuf;
 use std::sync::{atomic::AtomicBool, Arc};
@@ -38,6 +41,7 @@ pub struct Manager {
     pub consent: Arc<AtomicBool>,
     pub lan: bool,
     pub hotspot: bool,
+    pub lan_upgrade_host: Option<LanUpgradeHost>,
     pub routes: Routes,
     #[cfg(target_os = "linux")]
     pub bluetooth: Option<Arc<crate::bluetooth::Bluetooth>>,
@@ -52,40 +56,68 @@ impl Manager {
     ) -> Result<()> {
         let sessions = TaskTracker::new();
         let slots = Arc::new(Semaphore::new(16));
-        loop {
+        let classifiers = Arc::new(Semaphore::new(16));
+        let result = loop {
             enum Work {
                 Stop,
                 Send(SendInfo),
-                Incoming(TransportStream, &'static str),
+                IncomingBluetooth(TransportStream),
+                IncomingLan(std::io::Result<TcpStream>),
             }
             let work = tokio::select! {
                 _=ctk.cancelled()=>Work::Stop,
                 Some(send)=sends.recv()=>Work::Send(send),
-                Some(stream)=incoming.recv()=>Work::Incoming(stream,"bluetooth"),
+                Some(stream)=incoming.recv()=>Work::IncomingBluetooth(stream),
                 connection=async {listener.as_ref().expect("guarded listener").accept().await},if listener.is_some()=>{
-                    let (stream,_)=connection?;Work::Incoming(Box::new(stream),"lan")
-                }
-            };
-            if matches!(&work, Work::Stop) {
-                break;
-            }
-            let permit = match slots.clone().try_acquire_owned() {
-                Ok(permit) => permit,
-                Err(_) => {
-                    if let Work::Send(send) = work {
-                        self.failure(
-                            &send.id,
-                            true,
-                            None,
-                            "maximum active sessions reached".into(),
-                        );
-                    }
-                    continue;
+                    Work::IncomingLan(connection.map(|(stream, _)| stream))
                 }
             };
             match work {
-                Work::Stop => break,
-                Work::Incoming(stream, transport) => {
+                Work::Stop => break Ok(()),
+                Work::IncomingLan(Err(error)) => break Err(error.into()),
+                Work::IncomingLan(Ok(stream)) => {
+                    let permit = match classifiers.clone().try_acquire_owned() {
+                        Ok(permit) => permit,
+                        Err(_) => {
+                            log::debug!("discarding LAN connection: classifier capacity reached");
+                            continue;
+                        }
+                    };
+                    let manager = self.clone();
+                    let token = ctk.child_token();
+                    let slots = slots.clone();
+                    sessions.spawn(async move {
+                        let classified = manager.classify_lan(stream, &token).await;
+                        // Classification never consumes a file-session slot,
+                        // and its own slot is released before an ordinary session.
+                        drop(permit);
+                        let Some((stream, request)) = classified else {
+                            return;
+                        };
+                        let permit = match slots.try_acquire_owned() {
+                            Ok(permit) => permit,
+                            Err(_) => {
+                                log::debug!("discarding LAN connection: session capacity reached");
+                                return;
+                            }
+                        };
+                        if token.is_cancelled()
+                            || *manager.visibility.borrow() == Visibility::Invisible
+                        {
+                            log::debug!("discarding LAN connection: receive visibility expired");
+                            return;
+                        }
+                        let _permit = permit;
+                        manager
+                            .incoming_session(Box::new(stream), "lan", Some(request), token)
+                            .await;
+                    });
+                }
+                Work::IncomingBluetooth(stream) => {
+                    let permit = match slots.clone().try_acquire_owned() {
+                        Ok(permit) => permit,
+                        Err(_) => continue,
+                    };
                     if *self.visibility.borrow() == Visibility::Invisible {
                         continue;
                     }
@@ -93,16 +125,24 @@ impl Manager {
                     let token = ctk.child_token();
                     sessions.spawn(async move {
                         let _permit = permit;
-                        let id = uuid::Uuid::new_v4().to_string();
-                        let watcher = manager.watch_cancel(id.clone(), token.clone(), None);
                         manager
-                            .session(id, stream, transport, None, None, token.clone())
+                            .incoming_session(stream, "bluetooth", None, token)
                             .await;
-                        token.cancel();
-                        let _ = watcher.await;
                     });
                 }
                 Work::Send(send) => {
+                    let permit = match slots.clone().try_acquire_owned() {
+                        Ok(permit) => permit,
+                        Err(_) => {
+                            self.failure(
+                                &send.id,
+                                true,
+                                None,
+                                "maximum active sessions reached".into(),
+                            );
+                            continue;
+                        }
+                    };
                     let manager = self.clone();
                     let token = ctk.child_token();
                     sessions.spawn(async move {
@@ -111,10 +151,78 @@ impl Manager {
                     });
                 }
             }
-        }
+        };
+        ctk.cancel();
         sessions.close();
         sessions.wait().await;
-        Ok(())
+        result
+    }
+    async fn classify_lan(
+        &self,
+        mut stream: TcpStream,
+        token: &CancellationToken,
+    ) -> Option<(TcpStream, n::ConnectionRequestFrame)> {
+        let mut reader = FrameReader::default();
+        let bytes = tokio::select! {
+            biased;
+            _ = token.cancelled() => return None,
+            result = tokio::time::timeout(Duration::from_secs(5), reader.read_frame(&mut stream)) => {
+                match result {
+                    Ok(Ok(bytes)) => bytes,
+                    Ok(Err(_)) => {
+                        log::debug!("discarding LAN connection: first frame unavailable");
+                        return None;
+                    }
+                    Err(_) => {
+                        log::debug!("discarding LAN connection: first frame timed out");
+                        return None;
+                    }
+                }
+            }
+        };
+        match classify_initial_frame(&bytes) {
+            Ok(InitialFrame::ConnectionRequest(request)) => Some((stream, request)),
+            Ok(InitialFrame::Upgrade(introduction)) => {
+                match &self.lan_upgrade_host {
+                    Some(host) => {
+                        if host.route(LanCandidate { stream, introduction }).is_err() {
+                            log::debug!("discarding LAN connection: upgrade candidate not admitted");
+                        }
+                    }
+                    None => {
+                        log::debug!("discarding LAN connection: no upgrade host");
+                    }
+                }
+                None
+            }
+            Err(_) => {
+                log::debug!("discarding LAN connection: invalid initial frame");
+                None
+            }
+        }
+    }
+
+    async fn incoming_session(
+        &self,
+        stream: TransportStream,
+        transport: &str,
+        initial_request: Option<n::ConnectionRequestFrame>,
+        token: CancellationToken,
+    ) {
+        let id = uuid::Uuid::new_v4().to_string();
+        let watcher = self.watch_cancel(id.clone(), token.clone(), None);
+        self.session(
+            id,
+            stream,
+            transport,
+            None,
+            None,
+            initial_request,
+            token.clone(),
+        )
+        .await;
+        token.cancel();
+        let _ = watcher.await;
     }
     fn failure(&self, id: &str, outbound: bool, transport: Option<String>, error: String) {
         let _ = self.events.send(ChannelMessage {
@@ -189,6 +297,7 @@ impl Manager {
                     transport,
                     Some(send.ob),
                     remote_endpoint,
+                    None,
                     ctk.clone(),
                 )
                 .await
@@ -217,6 +326,7 @@ impl Manager {
         transport: &str,
         outgoing: Option<OutboundPayload>,
         remote_endpoint: Option<String>,
+        initial_request: Option<n::ConnectionRequestFrame>,
         ctk: CancellationToken,
     ) {
         let download = self.download.clone();
@@ -234,6 +344,7 @@ impl Manager {
             self.consent.clone(),
             outgoing,
             remote_endpoint,
+            self.lan_upgrade_host.clone(),
         ) {
             Ok(session) => session,
             Err(error) => {
@@ -246,6 +357,9 @@ impl Manager {
                 return;
             }
         };
+        if let Some(request) = initial_request {
+            session.set_initial_request(request);
+        }
         let _ = session.run(ctk).await;
     }
     fn watch_cancel(
@@ -267,10 +381,169 @@ impl Manager {
     }
 }
 
+enum InitialFrame {
+    ConnectionRequest(n::ConnectionRequestFrame),
+    Upgrade(n::bandwidth_upgrade_negotiation_frame::ClientIntroduction),
+}
+
+fn classify_initial_frame(bytes: &[u8]) -> Result<InitialFrame> {
+    use n::bandwidth_upgrade_negotiation_frame::EventType;
+    use n::v1_frame::FrameType;
+
+    let frame = n::OfflineFrame::decode(bytes)?;
+    ensure!(
+        frame.version == Some(n::offline_frame::Version::V1.into()),
+        "unsupported LAN first-frame version"
+    );
+    let v1 = frame.v1.ok_or_else(|| anyhow!("missing LAN first-frame body"))?;
+    let bodies = v1.connection_request.is_some() as usize
+        + v1.connection_response.is_some() as usize
+        + v1.payload_transfer.is_some() as usize
+        + v1.bandwidth_upgrade_negotiation.is_some() as usize
+        + v1.keep_alive.is_some() as usize
+        + v1.disconnection.is_some() as usize
+        + v1.paired_key_encryption.is_some() as usize
+        + v1.bandwidth_upgrade_retry.is_some() as usize;
+    ensure!(bodies == 1, "ambiguous LAN first-frame body");
+    match v1.r#type {
+        Some(kind) if kind == FrameType::ConnectionRequest as i32 => {
+            let request = v1
+                .connection_request
+                .ok_or_else(|| anyhow!("missing LAN connection request"))?;
+            ensure!(request.endpoint_id().len() == 4, "invalid LAN endpoint");
+            Ok(InitialFrame::ConnectionRequest(request))
+        }
+        Some(kind) if kind == FrameType::BandwidthUpgradeNegotiation as i32 => {
+            let upgrade = v1
+                .bandwidth_upgrade_negotiation
+                .ok_or_else(|| anyhow!("missing LAN upgrade introduction"))?;
+            ensure!(
+                upgrade.event_type == Some(EventType::ClientIntroduction.into())
+                    && upgrade.upgrade_path_info.is_none()
+                    && upgrade.client_introduction_ack.is_none(),
+                "invalid LAN upgrade introduction"
+            );
+            let introduction = upgrade
+                .client_introduction
+                .ok_or_else(|| anyhow!("missing LAN client introduction"))?;
+            ensure!(introduction.endpoint_id().len() == 4, "invalid LAN endpoint");
+            Ok(InitialFrame::Upgrade(introduction))
+        }
+        _ => Err(anyhow!("unsupported LAN first-frame type")),
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
     use std::io::Write;
+    use tokio::io::{AsyncReadExt, AsyncWriteExt};
+
+    fn lan_manager(
+        visibility: watch::Receiver<Visibility>,
+        host: LanUpgradeHost,
+    ) -> (Manager, broadcast::Receiver<ChannelMessage>) {
+        let (events, receive) = broadcast::channel(256);
+        (
+            Manager {
+                endpoint: *b"TEST",
+                name: "test".into(),
+                events,
+                visibility,
+                download: Arc::new(RwLock::new(std::env::temp_dir())),
+                consent: Arc::new(AtomicBool::new(false)),
+                lan: true,
+                hotspot: false,
+                lan_upgrade_host: Some(host),
+                routes: Arc::new(RwLock::new(HashMap::new())),
+                #[cfg(target_os = "linux")]
+                bluetooth: None,
+            },
+            receive,
+        )
+    }
+
+    fn connection_request(endpoint: &str) -> n::OfflineFrame {
+        n::OfflineFrame {
+            version: Some(n::offline_frame::Version::V1.into()),
+            v1: Some(n::V1Frame {
+                r#type: Some(n::v1_frame::FrameType::ConnectionRequest.into()),
+                connection_request: Some(n::ConnectionRequestFrame {
+                    endpoint_id: Some(endpoint.into()),
+                    endpoint_info: Some(
+                        crate::utils::RemoteDeviceInfo {
+                            name: "test peer".into(),
+                            device_type: crate::utils::DeviceType::Phone,
+                        }
+                        .serialize(),
+                    ),
+                    ..Default::default()
+                }),
+                ..Default::default()
+            }),
+        }
+    }
+
+    fn introduction(endpoint: &str) -> n::OfflineFrame {
+        n::OfflineFrame {
+            version: Some(n::offline_frame::Version::V1.into()),
+            v1: Some(n::V1Frame {
+                r#type: Some(n::v1_frame::FrameType::BandwidthUpgradeNegotiation.into()),
+                bandwidth_upgrade_negotiation: Some(n::BandwidthUpgradeNegotiationFrame {
+                    event_type: Some(
+                        n::bandwidth_upgrade_negotiation_frame::EventType::ClientIntroduction.into(),
+                    ),
+                    client_introduction: Some(
+                        n::bandwidth_upgrade_negotiation_frame::ClientIntroduction {
+                            endpoint_id: Some(endpoint.into()),
+                            supports_disabling_encryption: Some(false),
+                        },
+                    ),
+                    ..Default::default()
+                }),
+                ..Default::default()
+            }),
+        }
+    }
+
+    fn append_frame(wire: &mut Vec<u8>, bytes: &[u8]) {
+        wire.extend_from_slice(&(bytes.len() as u32).to_be_bytes());
+        wire.extend_from_slice(bytes);
+    }
+
+    async fn assert_peer_closed(peer: &mut TcpStream) {
+        let mut byte = [0];
+        let result = tokio::time::timeout(Duration::from_secs(2), peer.read(&mut byte))
+            .await
+            .expect("inadmissible connection must be dropped");
+        match result {
+            Ok(0) => {}
+            Err(error) if error.kind() == std::io::ErrorKind::ConnectionReset => {}
+            other => panic!("expected a closed peer, received {other:?}"),
+        }
+    }
+
+    async fn open_ordinary_session(address: std::net::SocketAddr, endpoint: &str) -> TcpStream {
+        let mut peer = TcpStream::connect(address).await.unwrap();
+        let (_, client_init) = crate::crypto::Handshake::client().unwrap();
+        let mut wire = Vec::new();
+        append_frame(&mut wire, &connection_request(endpoint).encode_to_vec());
+        append_frame(&mut wire, &client_init);
+        peer.write_all(&wire).await.unwrap();
+        let response = tokio::time::timeout(
+            Duration::from_secs(2),
+            FrameReader::default().read_frame(&mut peer),
+        )
+        .await
+        .expect("visible ordinary session must receive a real UKEY2 server response")
+        .unwrap();
+        let response = crate::securegcm::Ukey2Message::decode(response.as_slice()).unwrap();
+        assert_eq!(
+            response.message_type,
+            Some(crate::securegcm::ukey2_message::Type::ServerInit.into())
+        );
+        peer
+    }
 
     struct Source(PathBuf);
     impl Drop for Source {
@@ -304,6 +577,7 @@ mod tests {
             consent: Arc::new(AtomicBool::new(false)),
             lan: true,
             hotspot: false,
+            lan_upgrade_host: None,
             routes: Arc::new(RwLock::new(HashMap::new())),
             #[cfg(target_os = "linux")]
             bluetooth: None,
@@ -378,6 +652,7 @@ mod tests {
                 consent: Arc::new(AtomicBool::new(false)),
                 lan: true,
                 hotspot: false,
+                lan_upgrade_host: None,
                 routes,
                 #[cfg(target_os = "linux")]
                 bluetooth: None,
@@ -414,5 +689,242 @@ mod tests {
                 );
             }
         }
+    }
+
+    #[tokio::test]
+    async fn visibility_expiry_rejects_new_sessions_but_preserves_pending_upgrade_admission() {
+        let listener = TcpListener::bind("127.0.0.1:0").await.unwrap();
+        let address = listener.local_addr().unwrap();
+        let host = LanUpgradeHost::new(address.port());
+        let mut registration = host.register("PEER").unwrap();
+        let (visibility, visible) = watch::channel(Visibility::Visible);
+        let (manager, mut events) = lan_manager(visible, host);
+        let (_incoming, incoming) = mpsc::channel(1);
+        let (_outgoing, sends) = mpsc::channel(1);
+        let stop = CancellationToken::new();
+        let worker = tokio::spawn(manager.run(Some(listener), incoming, sends, stop.clone()));
+
+        let mut ordinary = TcpStream::connect(address).await.unwrap();
+        let request = connection_request("PEER").encode_to_vec();
+        let prefix = (request.len() as u32).to_be_bytes();
+        ordinary.write_all(&prefix[..3]).await.unwrap();
+        visibility.send_replace(Visibility::Invisible);
+        ordinary.write_all(&prefix[3..]).await.unwrap();
+        ordinary.write_all(&request).await.unwrap();
+        assert_peer_closed(&mut ordinary).await;
+
+        let mut upgrade = TcpStream::connect(address).await.unwrap();
+        let mut wire = Vec::new();
+        append_frame(&mut wire, &introduction("PEER").encode_to_vec());
+        append_frame(&mut wire, b"remaining bytes belong to the existing transfer");
+        upgrade.write_all(&wire).await.unwrap();
+        let mut candidate = tokio::time::timeout(Duration::from_secs(2), registration.recv())
+            .await
+            .expect("a pending upgrade must remain admissible while invisible")
+            .unwrap();
+        assert_eq!(candidate.introduction.endpoint_id(), "PEER");
+        assert_eq!(candidate.stream.peer_addr().unwrap(), upgrade.local_addr().unwrap());
+        assert_eq!(
+            FrameReader::default().read_frame(&mut candidate.stream).await.unwrap(),
+            b"remaining bytes belong to the existing transfer"
+        );
+        assert!(matches!(
+            events.try_recv(),
+            Err(broadcast::error::TryRecvError::Empty)
+        ));
+        stop.cancel();
+        tokio::time::timeout(Duration::from_secs(2), worker)
+            .await
+            .expect("manager must join classifier tasks on cancellation")
+            .unwrap()
+            .unwrap();
+    }
+
+    #[tokio::test]
+    async fn ordinary_tcp_admission_primes_the_request_once_without_losing_the_next_frame() {
+        let listener = TcpListener::bind("127.0.0.1:0").await.unwrap();
+        let address = listener.local_addr().unwrap();
+        let (_visibility, visible) = watch::channel(Visibility::Visible);
+        let (manager, mut events) = lan_manager(visible, LanUpgradeHost::new(address.port()));
+        let (_incoming, incoming) = mpsc::channel(1);
+        let (_outgoing, sends) = mpsc::channel(1);
+        let stop = CancellationToken::new();
+        let worker = tokio::spawn(manager.run(Some(listener), incoming, sends, stop.clone()));
+        let _peer = open_ordinary_session(address, "PEER").await;
+        let mut requests = 0;
+        tokio::time::timeout(Duration::from_secs(2), async {
+            loop {
+                let event = events.recv().await.unwrap();
+                assert_eq!(event.rtype, Some(TransferType::Inbound));
+                assert!(event.error.is_none());
+                if event.state == Some(State::ReceivedConnectionRequest) {
+                    requests += 1;
+                }
+                if event.state == Some(State::SentUkeyServerInit) {
+                    break;
+                }
+            }
+        })
+        .await
+        .unwrap();
+        assert_eq!(requests, 1);
+        assert!(matches!(
+            events.try_recv(),
+            Err(broadcast::error::TryRecvError::Empty)
+        ));
+        stop.cancel();
+        tokio::time::timeout(Duration::from_secs(2), worker)
+            .await
+            .expect("manager must join the admitted session on cancellation")
+            .unwrap()
+            .unwrap();
+    }
+
+    #[tokio::test]
+    async fn pending_upgrade_uses_classifier_capacity_when_all_file_sessions_are_active() {
+        let listener = TcpListener::bind("127.0.0.1:0").await.unwrap();
+        let address = listener.local_addr().unwrap();
+        let host = LanUpgradeHost::new(address.port());
+        let mut registration = host.register("PEER").unwrap();
+        let (visibility, visible) = watch::channel(Visibility::Visible);
+        let (manager, mut events) = lan_manager(visible, host);
+        let (_incoming, incoming) = mpsc::channel(1);
+        let (_outgoing, sends) = mpsc::channel(1);
+        let stop = CancellationToken::new();
+        let worker = tokio::spawn(manager.run(Some(listener), incoming, sends, stop.clone()));
+        let mut peers = Vec::new();
+        for index in 0..16 {
+            peers.push(open_ordinary_session(address, &format!("S{index:03}")).await);
+            tokio::time::timeout(Duration::from_secs(2), async {
+                loop {
+                    let event = events.recv().await.unwrap();
+                    assert!(event.error.is_none());
+                    if event.state == Some(State::SentUkeyServerInit) {
+                        break;
+                    }
+                }
+            })
+            .await
+            .unwrap();
+        }
+        let mut excess = TcpStream::connect(address).await.unwrap();
+        let mut excess_wire = Vec::new();
+        append_frame(&mut excess_wire, &connection_request("LAST").encode_to_vec());
+        excess.write_all(&excess_wire).await.unwrap();
+        assert_peer_closed(&mut excess).await;
+        visibility.send_replace(Visibility::Invisible);
+        let mut upgrade = TcpStream::connect(address).await.unwrap();
+        let mut wire = Vec::new();
+        append_frame(&mut wire, &introduction("PEER").encode_to_vec());
+        upgrade.write_all(&wire).await.unwrap();
+        let candidate = tokio::time::timeout(Duration::from_secs(2), registration.recv())
+            .await
+            .expect("upgrade routing must not acquire one of the occupied session slots")
+            .unwrap();
+        assert_eq!(candidate.stream.peer_addr().unwrap(), upgrade.local_addr().unwrap());
+        assert!(matches!(
+            events.try_recv(),
+            Err(broadcast::error::TryRecvError::Empty)
+        ));
+        stop.cancel();
+        tokio::time::timeout(Duration::from_secs(2), worker)
+            .await
+            .expect("all active file sessions must cancel and join")
+            .unwrap()
+            .unwrap();
+        drop(peers);
+    }
+
+    #[tokio::test]
+    async fn malformed_and_unregistered_public_introductions_do_not_create_transfers() {
+        let listener = TcpListener::bind("127.0.0.1:0").await.unwrap();
+        let address = listener.local_addr().unwrap();
+        let host = LanUpgradeHost::new(address.port());
+        let mut registration = host.register("PEER").unwrap();
+        let (_visibility, visible) = watch::channel(Visibility::Invisible);
+        let (manager, mut events) = lan_manager(visible, host);
+        let (_incoming, incoming) = mpsc::channel(1);
+        let (_outgoing, sends) = mpsc::channel(1);
+        let stop = CancellationToken::new();
+        let worker = tokio::spawn(manager.run(Some(listener), incoming, sends, stop.clone()));
+        let mut wrong_version = introduction("PEER");
+        wrong_version.version = Some(n::offline_frame::Version::UnknownVersion.into());
+        let mut missing_type = introduction("PEER");
+        missing_type.v1.as_mut().unwrap().r#type = None;
+        let mut wrong_type = introduction("PEER");
+        wrong_type.v1.as_mut().unwrap().r#type =
+            Some(n::v1_frame::FrameType::KeepAlive.into());
+        let mut missing_introduction = introduction("PEER");
+        missing_introduction
+            .v1
+            .as_mut()
+            .unwrap()
+            .bandwidth_upgrade_negotiation
+            .as_mut()
+            .unwrap()
+            .client_introduction = None;
+        let mut mixed_body = introduction("PEER");
+        mixed_body.v1.as_mut().unwrap().connection_request =
+            connection_request("PEER").v1.unwrap().connection_request;
+        let mut mixed_upgrade = introduction("PEER");
+        mixed_upgrade
+            .v1
+            .as_mut()
+            .unwrap()
+            .bandwidth_upgrade_negotiation
+            .as_mut()
+            .unwrap()
+            .upgrade_path_info = Some(Default::default());
+        let mut wrong_event = introduction("PEER");
+        wrong_event
+            .v1
+            .as_mut()
+            .unwrap()
+            .bandwidth_upgrade_negotiation
+            .as_mut()
+            .unwrap()
+            .event_type = Some(
+            n::bandwidth_upgrade_negotiation_frame::EventType::ClientIntroductionAck.into(),
+        );
+        for frame in [
+            wrong_version,
+            missing_type,
+            wrong_type,
+            missing_introduction,
+            mixed_body,
+            mixed_upgrade,
+            wrong_event,
+            introduction("NONE"),
+            introduction("invalid"),
+        ] {
+            let mut peer = TcpStream::connect(address).await.unwrap();
+            let mut wire = Vec::new();
+            append_frame(&mut wire, &frame.encode_to_vec());
+            peer.write_all(&wire).await.unwrap();
+            assert_peer_closed(&mut peer).await;
+            assert!(matches!(
+                events.try_recv(),
+                Err(broadcast::error::TryRecvError::Empty)
+            ));
+        }
+        let mut valid = TcpStream::connect(address).await.unwrap();
+        let mut wire = Vec::new();
+        append_frame(&mut wire, &introduction("PEER").encode_to_vec());
+        valid.write_all(&wire).await.unwrap();
+        let candidate = tokio::time::timeout(Duration::from_secs(2), registration.recv())
+            .await
+            .expect("rejected candidates must not freeze a pending registration")
+            .unwrap();
+        assert_eq!(candidate.stream.peer_addr().unwrap(), valid.local_addr().unwrap());
+        assert!(matches!(
+            events.try_recv(),
+            Err(broadcast::error::TryRecvError::Empty)
+        ));
+        stop.cancel();
+        tokio::time::timeout(Duration::from_secs(2), worker)
+            .await
+            .unwrap()
+            .unwrap()
+            .unwrap();
     }
 }

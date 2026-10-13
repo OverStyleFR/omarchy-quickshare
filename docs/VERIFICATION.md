@@ -92,6 +92,14 @@ A private runtime peer exercised the real session/UKEY2/sharing implementation. 
 
 The positive TCP candidate was explicitly staged on loopback because production admission rejects self-address peers. This proves engine negotiation/authentication behavior and actual TCP data handling, not a new native Android or Bluetooth-radio transfer. Temporary runtime modules and runners were removed after observation.
 
+## Shared LAN listener — 0.2.3 alpha
+
+The locked suite passed **91 tests**, with the consenting physical SDP regression ignored. Additional regressions exercise duplicate/closed admissions, queue bounds, ownership-safe removal, immutable candidate selection, canceled partial-frame reads, visibility expiry, preserved back-to-back connection/UKEY2 frames, and routing upgrades when file-session capacity is saturated.
+
+Eight private runtime scenarios passed under **NoNewPrivileges**. The complete Manager actor used one owned TCP listener: a registered introduction still routed while receive visibility was off, its following encrypted record remained intact, and no new transfer event, consent or receive file was produced by routing. An invisible ordinary request was closed; a visible connection request followed by UKEY2 ClientInit in one write yielded real ServerInit and exactly one connection-request event.
+
+The production selector advertised all eligible physical addresses at the existing host port without opening per-upgrade listeners or changing its NetworkManager snapshot. The authentication, pre-drain fallback, 57-byte TCP file, wrong-key/plaintext/replay rejection and irreversible-drain scenarios also passed. Probe listeners used private test ports, not the installed service's live port **47593**; positive remote admission was staged on loopback and Bluetooth bootstrap was emulated. These observations do not certify a new native Android migration or external firewall reachability. Temporary modules and runners were removed after the smoke.
+
 ## Evidence interpretation
 
 Successful transfer means engine completion plus the stated integrity method. A valid media container, a round trip, a capability label or 0/0 bytes alone is not independent destination integrity.
