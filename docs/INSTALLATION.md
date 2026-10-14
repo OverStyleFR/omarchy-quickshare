@@ -67,11 +67,11 @@ Finish or explicitly cancel active transfers first.
 omarchy plugin update macondo.quickshare
 ```
 
-The native updater follows the repository's stable `main` channel, including **v0.2.0** and its optional transfer effects. Then open **Settings** in the panel and choose **Update service** in the **Service** section when you want to update the backend to the release supplied by the current checkout. Source mode rebuilds the current locked checkout; package mode creates and installs the corresponding Arch package with local authorization. Do not claim the daemon is updated merely because the QML checkout changed.
+The native updater follows the repository's stable `main` channel, including **v0.2.4** and its optional transfer effects. Then open **Settings** in the panel and choose **Update service** in the **Service** section when you want to update the backend to the release supplied by the current checkout. Source mode rebuilds the current locked checkout; package mode creates and installs the corresponding Arch package with local authorization. Do not claim the daemon is updated merely because the QML checkout changed.
 
 Backend **0.1.2 or newer** supports the private file-selection handoff and the UI-only transfer effects; effects alone do not require a backend upgrade. A 0.1.1 or older backend displays **Service update required**; update the service as well as the native plugin before sharing files. Restart Nautilus after saving work so its process loads the updated extension.
 
-Incoming LAN-first negotiation with shared-port upgrades requires backend **0.2.3**, currently on the **alpha** branch. Updating QML or reloading the shell alone does not update the running daemon. The stable `main` channel and marketplace snapshot are separate from alpha; use the matching checkout's service setup when testing it.
+Backend **0.2.4** includes the bounded discovery lifecycle plus the incoming LAN-first/shared-port improvements from alpha. Updating QML or reloading the shell alone does not update the running daemon. Update the native plugin, then use its explicit service update action to apply these backend changes. An older marketplace snapshot does not verify the newer upstream code.
 
 If Omarchy keeps a previously loaded component after a plugin update, use `omarchy restart shell` before opening its updated controls. Shell reload does not itself cancel the independent daemon's transfers, but service maintenance still requires them to end first.
 
@@ -141,7 +141,7 @@ Package builds use the user's cache rather than memory-backed `/tmp` by default 
 
 ## Returning an existing alpha checkout to main
 
-Transfer effects are included in stable **v0.2.0**. An existing native installation checked out on `alpha` can return to `main` through the same native plugin lifecycle:
+The tested alpha improvements and bounded discovery correction are included in stable **v0.2.4**. An existing native installation checked out on `alpha` can return to `main` through the same native plugin lifecycle:
 
 ```bash
 plugin="$HOME/.config/omarchy/plugins/macondo.quickshare"

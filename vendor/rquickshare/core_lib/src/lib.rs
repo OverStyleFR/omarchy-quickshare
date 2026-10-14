@@ -24,6 +24,7 @@ mod hdl;
 mod lan_upgrade;
 mod manager;
 mod network;
+mod peer_cache;
 mod session;
 mod storage;
 pub(crate) mod transport;
@@ -31,6 +32,7 @@ mod utils;
 pub use hdl::{EndpointInfo, OutboundPayload, State, Visibility};
 pub use manager::SendInfo;
 pub use utils::DeviceType;
+pub use peer_cache::{DISCOVERY_PEER_LIMIT, LAN_PEER_TTL};
 pub mod sharing_nearby {
     include!(concat!(env!("OUT_DIR"), "/sharing.nearby.rs"));
 }
@@ -295,23 +297,56 @@ impl RQS {
         let child = token.clone();
         let routes = self.routes.clone();
         let events = self.message_sender.clone();
-        tracker.spawn(async move{
-            let mut endpoints:HashMap<String,(String,String)>=HashMap::new();
-            loop {tokio::select!{_=child.cancelled()=>break,message=receive.recv()=>match message{
-                Ok(peer)=>{
-                    if peer.present==Some(true){
-                        if let Some(endpoint)=discovery_endpoint(&peer){endpoints.insert(peer.id.clone(),(endpoint,peer.transport.clone().unwrap_or_default()));}
-                    }else{endpoints.remove(&peer.id);}
-                    {let mut map=routes.write();map.clear();for (address,(endpoint,transport)) in &endpoints{
-                        let preferred=if transport=="bluetooth"{endpoints.iter().find(|(_,value)|value.0==*endpoint && value.1=="lan").map(|(lan,_)|lan.clone())}else{None};
-                        let fallback=if transport=="lan"{endpoints.iter().find(|(_,value)|value.0==*endpoint && value.1=="bluetooth").map(|(bt,_)|bt.clone())}else{None};
-                        map.insert(address.clone(),Route{endpoint:endpoint.clone(),preferred,fallback});
-                    }}
-                    let _=sender.send(peer);
+        tracker.spawn(async move {
+            let mut cache = peer_cache::PeerCache::default();
+            let mut endpoints: HashMap<String, (String, String)> = HashMap::new();
+            let mut expiry = tokio::time::interval(std::time::Duration::from_secs(1));
+            expiry.set_missed_tick_behavior(tokio::time::MissedTickBehavior::Skip);
+            loop {
+                tokio::select! {
+                    biased;
+                    _ = child.cancelled() => break,
+                    _ = expiry.tick() => {
+                        let mut map = routes.write();
+                        let mut changed = false;
+                        cache.expire(std::time::Instant::now(), |peer| {
+                            changed |= update_discovery_index(&mut endpoints, &peer);
+                            let _ = sender.send(peer);
+                        });
+                        if changed {
+                            rebuild_discovery_routes(&cache, &endpoints, &mut map);
+                        }
+                    }
+                    message = receive.recv() => {
+                        let mut map = routes.write();
+                        let mut changed = false;
+                        match message {
+                            Ok(peer) => cache.apply(peer, std::time::Instant::now(), |peer| {
+                                changed |= update_discovery_index(&mut endpoints, &peer);
+                                let _ = sender.send(peer);
+                            }),
+                            Err(broadcast::error::RecvError::Lagged(_)) => {
+                                cache.clear(|peer| {
+                                    changed |= update_discovery_index(&mut endpoints, &peer);
+                                    let _ = sender.send(peer);
+                                });
+                                Self::background_error(&events, "discovery channel lagged; cached peers withdrawn".into());
+                            }
+                            Err(broadcast::error::RecvError::Closed) => {
+                                cache.clear(|peer| {
+                                    changed |= update_discovery_index(&mut endpoints, &peer);
+                                    let _ = sender.send(peer);
+                                });
+                                map.clear();
+                                break;
+                            }
+                        }
+                        if changed {
+                            rebuild_discovery_routes(&cache, &endpoints, &mut map);
+                        }
+                    }
                 }
-                Err(broadcast::error::RecvError::Lagged(_))=>Self::background_error(&events,"discovery channel lagged; rescan required".into()),
-                Err(broadcast::error::RecvError::Closed)=>break,
-            }}}
+            }
         });
         Ok(())
     }
@@ -342,6 +377,58 @@ impl RQS {
         *self.download.write() = path.unwrap_or_else(utils::get_download_dir);
     }
 }
+fn update_discovery_index(
+    endpoints: &mut HashMap<String, (String, String)>,
+    peer: &EndpointInfo,
+) -> bool {
+    if peer.present != Some(true) {
+        return endpoints.remove(&peer.id).is_some();
+    }
+    let Some(endpoint) = discovery_endpoint(peer) else {
+        return endpoints.remove(&peer.id).is_some();
+    };
+    let transport = peer.transport.clone().unwrap_or_else(|| {
+        if peer.id.starts_with("bt:") { "bluetooth" } else { "lan" }.into()
+    });
+    if endpoints
+        .get(&peer.id)
+        .is_some_and(|previous| previous.0 == endpoint && previous.1 == transport)
+    {
+        return false;
+    }
+    endpoints.insert(peer.id.clone(), (endpoint, transport));
+    true
+}
+
+fn rebuild_discovery_routes(
+    cache: &peer_cache::PeerCache,
+    endpoints: &HashMap<String, (String, String)>,
+    routes: &mut HashMap<String, Route>,
+) {
+    routes.clear();
+    for peer in cache.peers() {
+        let address = &peer.id;
+        let Some((endpoint, transport)) = endpoints.get(address) else { continue; };
+        let preferred = if transport == "bluetooth" {
+            endpoints
+                .iter()
+                .find(|(_, peer)| peer.0 == *endpoint && peer.1 == "lan")
+                .map(|(address, _)| address.clone())
+        } else {
+            None
+        };
+        let fallback = if transport == "lan" {
+            endpoints
+                .iter()
+                .find(|(_, peer)| peer.0 == *endpoint && peer.1 == "bluetooth")
+                .map(|(address, _)| address.clone())
+        } else {
+            None
+        };
+        routes.insert(address.clone(), Route { endpoint: endpoint.clone(), preferred, fallback });
+    }
+}
+
 fn discovery_endpoint(peer: &EndpointInfo) -> Option<String> {
     if let Some(endpoint) = peer.fullname.strip_prefix("endpoint:") {
         return (endpoint.len() == 4).then(|| endpoint.to_owned());
@@ -358,3 +445,65 @@ fn discovery_endpoint(peer: &EndpointInfo) -> Option<String> {
     }
     String::from_utf8(bytes[1..5].to_vec()).ok()
 }
+
+#[cfg(test)]
+mod discovery_route_tests {
+    use super::*;
+    use std::time::Instant;
+
+    fn lan(endpoint: &str, address: &str) -> EndpointInfo {
+        let mut record = [3, 0, 0, 0, 0, 0xfc, 0x9f, 0x5e];
+        record[1..5].copy_from_slice(endpoint.as_bytes());
+        EndpointInfo {
+            fullname: format!("{}._FC9F5ED42C8A._tcp.local.", base64::engine::general_purpose::URL_SAFE_NO_PAD.encode(record)),
+            id: address.into(),
+            present: Some(true),
+            transport: Some("lan".into()),
+            ..Default::default()
+        }
+    }
+
+    #[test]
+    fn lan_replacement_and_expiry_remove_stale_preference_and_fallback_routes() {
+        let at = Instant::now();
+        let mut cache = peer_cache::PeerCache::default();
+        let mut index = HashMap::new();
+        let mut routes = HashMap::new();
+        let bluetooth = EndpointInfo {
+            fullname: "endpoint:PEER".into(), id: "bt:phone".into(),
+            present: Some(true), transport: Some("bluetooth".into()),
+            ..Default::default()
+        };
+        for peer in [bluetooth, lan("PEER", "192.0.2.1:1234"), lan("PEER", "192.0.2.2:5678")] {
+            cache.apply(peer, at, |peer| { update_discovery_index(&mut index, &peer); });
+            rebuild_discovery_routes(&cache, &index, &mut routes);
+        }
+        assert!(!routes.contains_key("192.0.2.1:1234"));
+        assert_eq!(routes["bt:phone"].preferred.as_deref(), Some("192.0.2.2:5678"));
+        assert_eq!(routes["192.0.2.2:5678"].fallback.as_deref(), Some("bt:phone"));
+        cache.expire(at + LAN_PEER_TTL, |peer| { update_discovery_index(&mut index, &peer); });
+        rebuild_discovery_routes(&cache, &index, &mut routes);
+        assert_eq!(routes.len(), 1);
+        assert!(routes["bt:phone"].preferred.is_none());
+        assert!(!index.contains_key("192.0.2.2:5678"));
+    }
+
+    #[test]
+    fn source_budget_and_lag_reset_bound_all_routing_indices() {
+        let at = Instant::now();
+        let mut cache = peer_cache::PeerCache::default();
+        let mut index = HashMap::new();
+        let mut routes = HashMap::new();
+        for number in 0..(DISCOVERY_PEER_LIMIT * 3) {
+            cache.apply(lan(&format!("{number:04x}"), &format!("192.0.2.1:{}", 10000 + number)), at,
+                |peer| { update_discovery_index(&mut index, &peer); });
+            rebuild_discovery_routes(&cache, &index, &mut routes);
+            assert!(index.len() <= DISCOVERY_PEER_LIMIT && routes.len() <= DISCOVERY_PEER_LIMIT);
+        }
+        assert_eq!(routes.len(), DISCOVERY_PEER_LIMIT);
+        cache.clear(|peer| { update_discovery_index(&mut index, &peer); });
+        rebuild_discovery_routes(&cache, &index, &mut routes);
+        assert!(index.is_empty() && routes.is_empty());
+    }
+}
+

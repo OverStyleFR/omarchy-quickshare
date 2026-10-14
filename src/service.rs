@@ -4,7 +4,10 @@ use crate::{integration::NautilusIntegration, BUS, INTERFACE, PATH};
 use anyhow::{bail, Context, Result};
 use directories::{ProjectDirs, UserDirs};
 use rqs_lib::channel::{ChannelAction, ChannelDirection, ChannelMessage};
-use rqs_lib::{EndpointInfo, EngineOptions, OutboundPayload, SendInfo, Visibility, RQS};
+use rqs_lib::{
+    EndpointInfo, EngineOptions, OutboundPayload, SendInfo, Visibility, DISCOVERY_PEER_LIMIT,
+    LAN_PEER_TTL, RQS,
+};
 use serde::{Deserialize, Serialize};
 use std::collections::BTreeMap;
 use std::path::{Path, PathBuf};
@@ -66,6 +69,10 @@ struct Device {
     id: String,
     name: String,
     transport: String,
+    #[serde(skip)]
+    fullname: String,
+    #[serde(skip)]
+    last_seen: Instant,
 }
 
 #[derive(Clone, Serialize)]
@@ -108,6 +115,76 @@ struct Snapshot {
     capabilities: Capabilities,
     errors: Vec<String>,
 }
+
+impl Snapshot {
+    fn expire_devices(&mut self, at: Instant) -> bool {
+        let previous = self.devices.len();
+        self.devices.retain(|device| {
+            device.transport != "lan"
+                || at.saturating_duration_since(device.last_seen) < LAN_PEER_TTL
+        });
+        self.devices.len() != previous
+    }
+
+    fn apply_device(&mut self, event: EndpointInfo, at: Instant) -> bool {
+        let transport = event.transport.unwrap_or_else(|| {
+            if event.id.starts_with("bt:") {
+                "bluetooth"
+            } else {
+                "lan"
+            }
+            .into()
+        });
+        if event.present != Some(true) {
+            let previous = self.devices.len();
+            self.devices.retain(|device| {
+                device.id != event.id
+                    || device.transport != transport
+                    || (!event.fullname.is_empty() && device.fullname != event.fullname)
+            });
+            return self.devices.len() != previous;
+        }
+
+        let previous = self.devices.len();
+        self.devices.retain(|device| {
+            event.fullname.is_empty()
+                || device.transport != transport
+                || device.fullname != event.fullname
+                || device.id == event.id
+        });
+        let mut changed = self.devices.len() != previous;
+        let name = event.name.unwrap_or_else(|| "Android".into());
+        if let Some(device) = self.devices.iter_mut().find(|device| device.id == event.id) {
+            changed |= device.name != name
+                || device.transport != transport
+                || device.fullname != event.fullname;
+            device.name = name;
+            device.transport = transport;
+            device.fullname = event.fullname;
+            device.last_seen = at;
+            return changed;
+        }
+
+        if self.devices.len() == DISCOVERY_PEER_LIMIT {
+            if let Some((index, _)) = self
+                .devices
+                .iter()
+                .enumerate()
+                .min_by_key(|(_, device)| device.last_seen)
+            {
+                self.devices.remove(index);
+            }
+        }
+        self.devices.push(Device {
+            id: event.id,
+            name,
+            transport,
+            fullname: event.fullname,
+            last_seen: at,
+        });
+        true
+    }
+}
 #[derive(Serialize)]
 struct SnapshotEnvelope<'a> {
     revision: u64,
@@ -127,8 +204,20 @@ impl Shared {
         self.revisions
             .send_modify(|value| *value = value.wrapping_add(1));
     }
+    async fn expire_devices_at(&self, at: Instant) {
+        let mut state = self.state.write().await;
+        if state.expire_devices(at) {
+            self.changed();
+        }
+    }
     async fn snapshot(&self) -> Result<String> {
-        let state = self.state.read().await;
+        self.snapshot_at(Instant::now()).await
+    }
+    async fn snapshot_at(&self, at: Instant) -> Result<String> {
+        let mut state = self.state.write().await;
+        if state.expire_devices(at) {
+            self.changed();
+        }
         Ok(serde_json::to_string(&SnapshotEnvelope {
             revision: *self.revisions.borrow(),
             snapshot: &state,
@@ -260,6 +349,16 @@ async fn apply_operation(
     sender: &mpsc::Sender<SendInfo>,
     action: Action,
 ) -> Result<String> {
+    apply_operation_at(shared, engine, sender, action, Instant::now()).await
+}
+
+async fn apply_operation_at(
+    shared: &Shared,
+    engine: &mut RQS,
+    sender: &mpsc::Sender<SendInfo>,
+    action: Action,
+    at: Instant,
+) -> Result<String> {
     match action {
         Action::Visibility(seconds) => {
             engine.change_visibility(if seconds == 0 {
@@ -279,8 +378,11 @@ async fn apply_operation(
             if paths.is_empty() || paths.len() > 1000 {
                 bail!("Selecciona entre 1 y 1000 archivos");
             }
-            let device = {
-                let state = shared.state.read().await;
+            let device_name = {
+                let mut state = shared.state.write().await;
+                if state.expire_devices(at) {
+                    shared.changed();
+                }
                 if state
                     .transfers
                     .iter()
@@ -294,7 +396,7 @@ async fn apply_operation(
                     .devices
                     .iter()
                     .find(|d| d.id == peer_id)
-                    .cloned()
+                    .map(|device| device.name.clone())
                     .context("El dispositivo ya no está disponible")?
             };
             let mut files = Vec::with_capacity(paths.len());
@@ -323,7 +425,7 @@ async fn apply_operation(
                 direction: "outbound",
                 state: "connecting",
                 pin_code: None,
-                device_name: device.name,
+                device_name,
                 files: files.clone(),
                 total_bytes,
                 transferred_bytes: 0,
@@ -531,24 +633,25 @@ async fn handle_message(shared: &Shared, message: ChannelMessage) -> Option<Tran
 }
 
 async fn handle_device(shared: &Shared, event: EndpointInfo) {
+    handle_device_at(shared, event, Instant::now()).await;
+}
+
+async fn handle_device_at(shared: &Shared, event: EndpointInfo, at: Instant) {
     let mut state = shared.state.write().await;
-    state.devices.retain(|d| d.id != event.id);
-    if event.present == Some(true) {
-        let transport = event.transport.unwrap_or_else(|| {
-            if event.id.starts_with("bt:") {
-                "bluetooth"
-            } else {
-                "lan"
-            }
-            .into()
-        });
-        state.devices.push(Device {
-            id: event.id,
-            name: event.name.unwrap_or_else(|| "Android".into()),
-            transport,
-        });
+    if state.apply_device(event, at) {
+        shared.changed();
     }
-    drop(state);
+}
+
+async fn handle_device_lagged(shared: &Shared, count: u64) {
+    let mut state = shared.state.write().await;
+    state.devices.clear();
+    if state.errors.len() >= 100 {
+        state.errors.remove(0);
+    }
+    state
+        .errors
+        .push(format!("Se perdieron {count} eventos de descubrimiento"));
     shared.changed();
 }
 
@@ -757,7 +860,7 @@ pub async fn serve(port: u16, download: Option<PathBuf>, options: EngineOptions)
             event = devices_rx.recv() => match event {
                 Ok(event) => handle_device(&shared, event).await,
                 Err(broadcast::error::RecvError::Lagged(count)) => {
-                    shared.state.write().await.errors.push(format!("Se perdieron {count} eventos de descubrimiento")); shared.changed();
+                    handle_device_lagged(&shared, count).await;
                 }
                 Err(broadcast::error::RecvError::Closed) => break,
             },
@@ -782,6 +885,7 @@ pub async fn serve(port: u16, download: Option<PathBuf>, options: EngineOptions)
             },
             _ = expiry.tick() => {
                 shared.share_selections.write().await.expire(Instant::now());
+                shared.expire_devices_at(Instant::now()).await;
                 let expired = shared.state.read().await.visibility_expires_at.is_some_and(|deadline| now() >= deadline);
                 if expired { let _ = apply_operation(&shared, &mut engine, &outgoing, Action::Visibility(0)).await; }
                 let stale: Vec<u32> = {
@@ -892,6 +996,304 @@ mod tests {
             commands,
         });
         (shared, receiver)
+    }
+
+    fn peer(fullname: &str, id: &str, transport: Option<&str>) -> EndpointInfo {
+        EndpointInfo {
+            fullname: fullname.into(),
+            id: id.into(),
+            name: Some("Pixel".into()),
+            present: Some(true),
+            transport: transport.map(str::to_owned),
+            ..Default::default()
+        }
+    }
+
+    async fn snapshot_json_at(shared: &Shared, at: Instant) -> serde_json::Value {
+        serde_json::from_str(&shared.snapshot_at(at).await.unwrap()).unwrap()
+    }
+
+    #[tokio::test]
+    async fn address_churn_retires_old_ids_without_a_withdrawal_event() {
+        let (shared, _commands) = shared_for_test();
+        let at = Instant::now();
+        for port in 47593..47849 {
+            let id = format!("192.0.2.10:{port}");
+            handle_device_at(&shared, peer("pixel._tcp.local.", &id, Some("lan")), at).await;
+            let snapshot = snapshot_json_at(&shared, at).await;
+            assert_eq!(
+                snapshot["devices"],
+                serde_json::json!([{ "id": id, "name": "Pixel", "transport": "lan" }])
+            );
+        }
+    }
+
+    #[tokio::test]
+    async fn discovery_count_is_bounded_across_lan_and_bluetooth_and_evicts_oldest() {
+        let (shared, _commands) = shared_for_test();
+        let at = Instant::now();
+        for index in 0..512 {
+            let id = if index % 2 == 0 {
+                format!("192.0.2.{}:{}", index % 254 + 1, 47000 + index)
+            } else {
+                format!("bt:AA:BB:CC:DD:{:02X}:{:02X}", index >> 8, index & 255)
+            };
+            let mut event = peer(&format!("peer-{index}"), &id, None);
+            event.name = Some(format!("Peer {index}"));
+            let seen = at + Duration::from_millis(index);
+            handle_device_at(&shared, event, seen).await;
+            let snapshot = snapshot_json_at(&shared, seen).await;
+            assert_eq!(
+                snapshot["devices"].as_array().unwrap().len(),
+                ((index + 1) as usize).min(DISCOVERY_PEER_LIMIT)
+            );
+        }
+        let retained_first = 512 - DISCOVERY_PEER_LIMIT;
+        let id = format!(
+            "192.0.2.{}:{}",
+            retained_first % 254 + 1,
+            47000 + retained_first
+        );
+        let mut refresh = peer(&format!("peer-{retained_first}"), &id, None);
+        refresh.name = Some(format!("Peer {retained_first}"));
+        handle_device_at(&shared, refresh, at + Duration::from_secs(1)).await;
+        let mut newcomer = peer("newcomer", "192.0.2.254:49999", None);
+        newcomer.name = Some("Newcomer".into());
+        handle_device_at(&shared, newcomer, at + Duration::from_secs(2)).await;
+        let snapshot = snapshot_json_at(&shared, at + Duration::from_secs(2)).await;
+        let devices = snapshot["devices"].as_array().unwrap();
+        assert_eq!(devices.len(), DISCOVERY_PEER_LIMIT);
+        let expected_evicted = format!("Peer {}", retained_first + 1);
+        let expected_retained = format!("Peer {retained_first}");
+        assert!(devices.iter().any(|device| device["name"] == expected_retained));
+        assert!(!devices.iter().any(|device| device["name"] == expected_evicted));
+        assert!(devices.iter().any(|device| device["name"] == "Newcomer"));
+    }
+
+    #[tokio::test]
+    async fn metadata_refresh_preserves_order_and_renews_the_lan_lease() {
+        let (shared, _commands) = shared_for_test();
+        let at = Instant::now();
+        let renewal = at + LAN_PEER_TTL / 2;
+        let event = peer("pixel._tcp.local.", "192.0.2.10:47593", None);
+        handle_device_at(&shared, event.clone(), at).await;
+        handle_device_at(
+            &shared,
+            peer("other._tcp.local.", "192.0.2.11:47593", None),
+            at,
+        )
+        .await;
+        let before = snapshot_json_at(&shared, at).await;
+        handle_device_at(&shared, event.clone(), renewal).await;
+        assert_eq!(snapshot_json_at(&shared, renewal).await, before);
+        let mut metadata = event;
+        metadata.name = Some("Renamed Pixel".into());
+        handle_device_at(&shared, metadata, renewal).await;
+        let renamed = snapshot_json_at(&shared, renewal).await;
+        assert_eq!(renamed["devices"][0]["id"], "192.0.2.10:47593");
+        assert_eq!(renamed["devices"][0]["name"], "Renamed Pixel");
+        assert_eq!(renamed["devices"][1]["id"], "192.0.2.11:47593");
+
+        shared.expire_devices_at(at + LAN_PEER_TTL).await;
+        let renewed = snapshot_json_at(&shared, at + LAN_PEER_TTL).await;
+        assert_eq!(renewed["devices"].as_array().unwrap().len(), 1);
+        assert_eq!(renewed["devices"][0]["id"], "192.0.2.10:47593");
+        assert_eq!(
+            snapshot_json_at(&shared, renewal + LAN_PEER_TTL - Duration::from_nanos(1))
+                .await["devices"]
+                .as_array()
+                .unwrap()
+                .len(),
+            1
+        );
+        shared.expire_devices_at(renewal + LAN_PEER_TTL).await;
+        let expired = snapshot_json_at(&shared, renewal + LAN_PEER_TTL).await;
+        assert!(expired["devices"].as_array().unwrap().is_empty());
+        assert_eq!(expired["visible"], false);
+    }
+
+    #[tokio::test]
+    async fn snapshot_expires_lan_at_the_boundary_without_changing_active_transfers() {
+        let (shared, _commands) = shared_for_test();
+        let at = Instant::now();
+        handle_device_at(
+            &shared,
+            peer("pixel._tcp.local.", "192.0.2.10:47593", None),
+            at,
+        )
+        .await;
+        handle_message(
+            &shared,
+            ChannelMessage {
+                id: "active-session".into(),
+                direction: ChannelDirection::LibToFront,
+                state: Some(rqs_lib::State::WaitingForUserConsent),
+                transport: Some("lan".into()),
+                ..Default::default()
+            },
+        )
+        .await;
+        let cancellation = CancellationToken::new();
+        {
+            let mut state = shared.state.write().await;
+            state.network_consent = true;
+            state.transfers[0].cancellation = Some(cancellation.clone());
+        }
+        let before =
+            snapshot_json_at(&shared, at + LAN_PEER_TTL - Duration::from_nanos(1)).await;
+        assert_eq!(before["devices"].as_array().unwrap().len(), 1);
+        let after = snapshot_json_at(&shared, at + LAN_PEER_TTL).await;
+        assert!(after["devices"].as_array().unwrap().is_empty());
+        assert_eq!(after["visible"], false);
+        assert_eq!(after["visibility_expires_at"], serde_json::Value::Null);
+        assert_eq!(after["network_consent"], true);
+        assert_eq!(after["transfers"], before["transfers"]);
+        assert!(!cancellation.is_cancelled());
+        assert!(after["revision"].as_u64().unwrap() > before["revision"].as_u64().unwrap());
+    }
+
+    #[tokio::test]
+    async fn late_old_owner_withdrawals_cannot_remove_the_current_route_owner() {
+        let (shared, _commands) = shared_for_test();
+        let at = Instant::now();
+        let id = "192.0.2.10:47593";
+        handle_device_at(&shared, peer("old._tcp.local.", id, None), at).await;
+        let mut current = peer("new._tcp.local.", id, None);
+        current.name = Some("Current owner".into());
+        handle_device_at(&shared, current.clone(), at).await;
+        let mut old = peer("old._tcp.local.", id, None);
+        old.present = Some(false);
+        handle_device_at(&shared, old, at).await;
+        let mut wrong_transport = current.clone();
+        wrong_transport.present = Some(false);
+        wrong_transport.transport = Some("bluetooth".into());
+        handle_device_at(&shared, wrong_transport, at).await;
+        let snapshot = snapshot_json_at(&shared, at).await;
+        assert_eq!(
+            snapshot["devices"],
+            serde_json::json!([{ "id": id, "name": "Current owner", "transport": "lan" }])
+        );
+        current.present = Some(false);
+        handle_device_at(&shared, current, at).await;
+        assert!(snapshot_json_at(&shared, at).await["devices"]
+            .as_array()
+            .unwrap()
+            .is_empty());
+    }
+
+    #[tokio::test]
+    async fn bluetooth_change_only_discovery_does_not_expire_on_the_lan_clock() {
+        let (shared, _commands) = shared_for_test();
+        let at = Instant::now();
+        handle_device_at(
+            &shared,
+            peer("", "bt:AA:BB:CC:DD:EE:FF", None),
+            at,
+        )
+        .await;
+        handle_device_at(
+            &shared,
+            peer("pixel._tcp.local.", "192.0.2.10:47593", None),
+            at,
+        )
+        .await;
+        let snapshot = snapshot_json_at(&shared, at + LAN_PEER_TTL * 4).await;
+        assert_eq!(
+            snapshot["devices"],
+            serde_json::json!([{
+                "id": "bt:AA:BB:CC:DD:EE:FF",
+                "name": "Pixel",
+                "transport": "bluetooth"
+            }])
+        );
+        assert_eq!(
+            snapshot_json_at(&shared, at + LAN_PEER_TTL * 8).await,
+            snapshot
+        );
+        let mut withdrawal = peer("", "bt:AA:BB:CC:DD:EE:FF", None);
+        withdrawal.present = Some(false);
+        handle_device_at(&shared, withdrawal, at + LAN_PEER_TTL * 8).await;
+        assert!(snapshot_json_at(&shared, at + LAN_PEER_TTL * 8).await["devices"]
+            .as_array()
+            .unwrap()
+            .is_empty());
+    }
+
+    #[tokio::test]
+    async fn send_rejects_retired_and_expired_peers_before_enqueuing_a_transfer() {
+        let (shared, _commands) = shared_for_test();
+        let at = Instant::now();
+        let old_id = "192.0.2.10:47593";
+        let new_id = "192.0.2.11:47594";
+        handle_device_at(&shared, peer("pixel._tcp.local.", old_id, None), at).await;
+        let renewed = at + Duration::from_secs(1);
+        handle_device_at(&shared, peer("pixel._tcp.local.", new_id, None), renewed).await;
+        let mut engine = RQS::with_options(
+            Visibility::Invisible,
+            None,
+            Some(PathBuf::from("/tmp")),
+            EngineOptions {
+                bluetooth: false,
+                lan: false,
+                hotspot: false,
+            },
+        );
+        let (sender, mut requests) = mpsc::channel(1);
+        for (id, send_at) in [(old_id, renewed), (new_id, renewed + LAN_PEER_TTL)] {
+            apply_operation_at(
+                &shared,
+                &mut engine,
+                &sender,
+                Action::Send(id.into(), vec!["/not-opened-for-a-stale-peer".into()]),
+                send_at,
+            )
+            .await
+            .unwrap_err();
+            assert!(matches!(
+                requests.try_recv(),
+                Err(mpsc::error::TryRecvError::Empty)
+            ));
+            let snapshot = snapshot_json_at(&shared, send_at).await;
+            assert!(snapshot["transfers"].as_array().unwrap().is_empty());
+        }
+        assert!(snapshot_json_at(&shared, renewed + LAN_PEER_TTL).await["devices"]
+            .as_array()
+            .unwrap()
+            .is_empty());
+    }
+
+    #[tokio::test]
+    async fn discovery_channel_lag_clears_the_public_device_model_and_advances_revision() {
+        let (shared, _commands) = shared_for_test();
+        let at = Instant::now();
+        handle_device_at(
+            &shared,
+            peer("pixel._tcp.local.", "192.0.2.10:47593", None),
+            at,
+        )
+        .await;
+        handle_device_at(
+            &shared,
+            peer("", "bt:AA:BB:CC:DD:EE:FF", None),
+            at,
+        )
+        .await;
+        let before = snapshot_json_at(&shared, at).await;
+        handle_device_lagged(&shared, 65).await;
+        let after = snapshot_json_at(&shared, at).await;
+        assert!(after["devices"].as_array().unwrap().is_empty());
+        assert_eq!(
+            after["revision"].as_u64().unwrap(),
+            before["revision"].as_u64().unwrap() + 1
+        );
+        assert_eq!(after["visible"], before["visible"]);
+        assert_eq!(after["network_consent"], before["network_consent"]);
+        assert_eq!(after["transfers"], before["transfers"]);
+        assert_eq!(after["errors"].as_array().unwrap().len(), 1);
+        for _ in 0..150 {
+            handle_device_lagged(&shared, 65).await;
+        }
+        assert_eq!(snapshot_json_at(&shared, at).await["errors"].as_array().unwrap().len(), 100);
     }
 
     #[tokio::test]

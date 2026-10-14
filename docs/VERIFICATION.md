@@ -100,6 +100,14 @@ Eight private runtime scenarios passed under **NoNewPrivileges**. The complete M
 
 The production selector advertised all eligible physical addresses at the existing host port without opening per-upgrade listeners or changing its NetworkManager snapshot. The authentication, pre-drain fallback, 57-byte TCP file, wrong-key/plaintext/replay rejection and irreversible-drain scenarios also passed. Probe listeners used private test ports, not the installed service's live port **47593**; positive remote admission was staged on loopback and Bluetooth bootstrap was emulated. These observations do not certify a new native Android migration or external firewall reachability. Temporary modules and runners were removed after the smoke.
 
+## Bounded discovery lifecycle — 0.2.4
+
+The locked workspace suite passed **111 tests**, with the consenting physical SDP regression ignored. Added behavior regressions cover address/port replacement, route preferences/fallbacks after replacement and expiry, old-owner withdrawals, monotonic lease boundaries and renewal, count pressure, invisible snapshots, stale Send refusal and discovery-channel loss.
+
+A private executable exercised production mDNS record decoding, real TCP connections on loopback, the source peer cache, aggregate peer/routing state and actual daemon Snapshot JSON under **NoNewPrivileges**. It rotated one service through **512 address/port changes**, introduced **160 distinct reachable peers**, and observed **1,344 snapshots** with visibility off. No snapshot exceeded **128 devices**; withdrawal and explicit monotonic expiry left zero retained devices or routes. Private lease fields were absent from JSON and no transfer was created.
+
+These records were synthetic and lease deadlines were explicit test instants, not a claimed 120-second wall-clock wait or native Android run. No multicast advertisement, radio change, network configuration change or host-service update was performed. The temporary runtime modules and executable were removed after observation.
+
 ## Evidence interpretation
 
 Successful transfer means engine completion plus the stated integrity method. A valid media container, a round trip, a capability label or 0/0 bytes alone is not independent destination integrity.
