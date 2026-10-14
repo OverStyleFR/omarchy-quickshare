@@ -108,6 +108,12 @@ A private executable exercised production mDNS record decoding, real TCP connect
 
 These records were synthetic and lease deadlines were explicit test instants, not a claimed 120-second wall-clock wait or native Android run. No multicast advertisement, radio change, network configuration change or host-service update was performed. The temporary runtime modules and executable were removed after observation.
 
+## Companion placement — alpha
+
+The closed-panel companion was moved to the lower-left corner without changing artwork, notification logic, activity captions, input handling or the panel halo. The actual Quickshell layer-shell component was exercised both from the installed checkout and the alpha source. Sending over LAN, receiving over Bluetooth and preparation remained visible with bars at the top, left, bottom and right; the overlay stayed inside the screen, clear of the bar and input-transparent. Both checkouts produced identical settled geometry, and disabling effects hid the surface.
+
+A native Omarchy toast and the companion were observed together in a live desktop capture: the toast remained legible in the upper-right corner and the companion occupied the lower-left. Panel-open projection retained its protected card/safety rectangle. The local plugin was rescanned through the native shell command; no backend restart, file transfer, radio operation or marketplace update was performed.
+
 ## Evidence interpretation
 
 Successful transfer means engine completion plus the stated integrity method. A valid media container, a round trip, a capability label or 0/0 bytes alone is not independent destination integrity.

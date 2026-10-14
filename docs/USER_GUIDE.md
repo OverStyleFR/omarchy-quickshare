@@ -97,7 +97,7 @@ Since **v0.2.0**, open **Settings → Transfer effects** and enable **Animated t
 
 - Preparation/connection uses orbiting signal beacons; active file sending uses outgoing paper packets; receiving uses inward packets and rings.
 - Confirmed **Wi-Fi / LAN**, **Bluetooth** and **Direct Wi-Fi / hotspot** have different motifs. An unconfirmed transport stays neutral rather than guessing from radio availability.
-- With the panel open, the halo stays outside the card and its safety margin. Closing the panel moves the activity to a small courier companion near the bar.
+- With the panel open, the halo stays outside the card and its safety margin. Closing the panel moves the small courier companion to the **lower-left corner**, away from the upper-right notification stack and clear of a left or bottom bar. Notifications keep their normal location and behavior.
 - The overlay does not accept pointer or keyboard input. Turning it off immediately removes the overlay and animation clock.
 
 To try the visuals without a phone, choose **Preview activity** and **Preview transport**, then **Preview · 8 s**. **Stop** ends it immediately. These eight-second previews perform no file or network transfer, accept no PIN, and do not modify the real transfer model or network permission. Real active transfers take priority.
