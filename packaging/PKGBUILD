@@ -1,8 +1,8 @@
 # Build with scripts/build-package.sh from a source checkout.
 pkgname=omarchy-quickshare
-pkgver=0.3.0alpha2
+pkgver=0.3.0alpha3
 pkgrel=1
-_sourcever=0.3.0-alpha.2
+_sourcever=0.3.0-alpha.3
 pkgdesc='Quick Share Rust backend for the native Omarchy plugin'
 url='https://github.com/PuroDelphi/omarchy-quickshare'
 arch=('x86_64' 'aarch64')

@@ -15,6 +15,7 @@ Use an Arch/Omarchy desktop for UI and lifecycle work. Dependencies and the nati
 ```bash
 cargo build --workspace --locked
 cargo test --workspace --locked
+bash scripts/tests/service-maintenance.sh
 omarchy plugin validate .
 ```
 
