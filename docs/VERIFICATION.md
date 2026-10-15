@@ -150,6 +150,16 @@ A fresh independent Python protobuf/cryptography receiver exercised the actual *
 
 These fresh checks establish independent-peer behavior, not a physical Android QR scan. No installed host backend, preferences, received files, radio settings or network configuration were modified.
 
+## Advertisement daemon lifecycle — 0.3.1
+
+The locked workspace built and passed **125 Rust tests**, with the consenting physical SDP regression ignored. The new lifecycle regression checks that loss of the visibility owner terminates a waiting hidden advertiser. All five service-maintenance regressions, package-script syntax checks and native plugin validation passed.
+
+A throwaway executable included the actual production `mdns.rs` and metadata utilities, using the pinned mDNS library and the unchanged 120-second LAN lease constant. In private user/network namespaces, its hidden constructor and running hidden actor owned zero advertisement-daemon threads or UDP sockets. An independent peer resolved the authentic PTR/SRV/TXT/A endpoint before rotation, after rotation and after showing again.
+
+The peer injected **384 unique unsolicited instances / 1,536 records** with 4,500-second TTLs. A fresh native daemon and new UDP socket inodes replaced the first generation at approximately **60.14 seconds**, despite repeated Visible updates. Hiding, visible cancellation and visibility-owner closure in visible/hidden states released the advertisement daemon and sockets. A separate real TCP connection remained open across these transitions and echoed **1,441,792 bytes** with identical independent SHA-256 hashes.
+
+This verifies actual advertisement resources and a separate TCP stream, not a Quick Share protocol transfer or a new physical Android run. Finite resource sampling does not exclude sub-sample thread epilogues; the code waits for shutdown acknowledgment, which the pinned library sends after dropping its cache and sockets. Generation retirement bounds cache retention lifetime, not absolute memory bytes within a generation. No installed host service, network/radio configuration, preferences or received files were changed. Owned processes were reaped.
+
 ## Evidence interpretation
 
 Successful transfer means engine completion plus the stated integrity method. A valid media container, a round trip, a capability label or 0/0 bytes alone is not independent destination integrity.
