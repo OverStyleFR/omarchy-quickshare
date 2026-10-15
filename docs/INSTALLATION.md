@@ -139,6 +139,22 @@ Actions are `install`, `update` and `remove`; language can be `en` or `es`. This
 
 Package builds use the user's cache rather than memory-backed `/tmp` by default and remove their temporary work directory when finished. An explicit `TMPDIR` takes precedence; choose a filesystem with enough space for the Rust build.
 
+## Trying native QR sending on alpha
+
+Native QR sending requires **0.3.0-alpha.1** of both the plugin and backend. The stable `main` channel and its marketplace review are not changed by alpha publication.
+
+For an existing Git-based native installation, preserve local modifications first:
+
+```bash
+plugin="$HOME/.config/omarchy/plugins/macondo.quickshare"
+git -C "$plugin" fetch origin alpha
+git -C "$plugin" switch alpha
+git -C "$plugin" merge --ff-only origin/alpha
+omarchy restart shell
+```
+
+Finish or cancel active transfers, then explicitly choose **Settings → Service → Update service** and authorize the setup terminal's stated changes. Reloading the shell or fetching alpha does not replace the running daemon. The prerelease version is read from the manifest/actual CLI, not inferred from the branch. Arch packages use `0.3.0alpha1` for the package version while the application and corresponding source use `0.3.0-alpha.1`.
+
 ## Returning an existing alpha checkout to main
 
 The tested alpha improvements and bounded discovery correction are included in stable **v0.2.4**. An existing native installation checked out on `alpha` can return to `main` through the same native plugin lifecycle:

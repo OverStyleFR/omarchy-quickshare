@@ -114,6 +114,16 @@ The closed-panel companion was moved to the lower-left corner without changing a
 
 A native Omarchy toast and the companion were observed together in a live desktop capture: the toast remained legible in the upper-right corner and the companion occupied the lower-left. Panel-open projection retained its protected card/safety rectangle. The local plugin was rescanned through the native shell command; no backend restart, file transfer, radio operation or marketplace update was performed.
 
+## Native QR sending — 0.3.0-alpha.1
+
+The locked workspace suite passed **124 tests** with the consenting physical SDP regression ignored. New regressions cover published HKDF values, fixed-02 key reconstruction, visible/hidden metadata, malformed/duplicate TLVs, wrong keys/tampering, monotonic expiry, owner-safe cancellation, one-time claim, direct routing, UKEY2-bound P1363 proof and preservation of both consent gates.
+
+An independent Python protobuf/cryptography receiver ran across a private veth pair in separate user/network namespaces, with a private HOME and session bus. The actual Rust daemon used its real mDNS discovery, TCP probe, QR matching channel, command actor and session engine under NoNewPrivileges. Both visible-token and hidden AES-GCM-name receivers obtained **two files**, independently hashed to the original SHA-256 values. The receiver verified the actual wire QR signature using the public key reconstructed from the URL. Remote ACCEPT alone yielded no file bytes during the observation interval; explicit local verification then allowed transfer completion. Pending QR replacement and stale-owner cancellation were also exercised while receive visibility remained off. Host interfaces, radio state, firewall and network profiles were not changed.
+
+The actual Panel.qml and Service.qml ran against a real private QR backend. Showing QR without a selected peer, file count, close-during-start, selection-change withdrawal and panel-close withdrawal were exercised. The Spanish panel's rendered QR was decoded with an independent barcode reader; English live labels were inspected. Later capture attempts encountered the host display locked/DPMS off; it was not woken or unlocked.
+
+These are source/runtime and independent-peer interoperability observations, not a claim of a new physical Android QR scan. No host backend was installed or restarted and no marketplace update was requested. Temporary peers and UI/backend processes were removed after observation.
+
 ## Evidence interpretation
 
 Successful transfer means engine completion plus the stated integrity method. A valid media container, a round trip, a capability label or 0/0 bytes alone is not independent destination integrity.

@@ -25,12 +25,14 @@ mod lan_upgrade;
 mod manager;
 mod network;
 mod peer_cache;
+pub mod qr;
 mod session;
 mod storage;
 pub(crate) mod transport;
 mod utils;
 pub use hdl::{EndpointInfo, OutboundPayload, State, Visibility};
 pub use manager::SendInfo;
+pub use qr::{QrInvitation, QrPeer, QrSendContext, QR_INVITATION_TTL};
 pub use utils::DeviceType;
 pub use peer_cache::{DISCOVERY_PEER_LIMIT, LAN_PEER_TTL};
 pub mod sharing_nearby {
@@ -74,6 +76,9 @@ pub struct RQS {
     consent: Arc<AtomicBool>,
     download: Arc<RwLock<PathBuf>>,
     routes: Routes,
+    qr_invitation: watch::Sender<Option<Arc<QrInvitation>>>,
+    qr_matches: mpsc::Sender<QrPeer>,
+    qr_receiver: Option<mpsc::Receiver<QrPeer>>,
     #[cfg(target_os = "linux")]
     bluetooth: Option<Arc<bluetooth::Bluetooth>>,
 }
@@ -105,6 +110,8 @@ impl RQS {
         // consent/terminal events during normal UI scheduling stalls.
         let (message_sender, _) = broadcast::channel(4096);
         let (visibility_sender, visibility_receiver) = watch::channel(visibility);
+        let (qr_invitation, _) = watch::channel(None);
+        let (qr_matches, qr_receiver) = mpsc::channel(16);
         Self {
             tracker: None,
             ctoken: None,
@@ -119,12 +126,33 @@ impl RQS {
                 download_path.unwrap_or_else(utils::get_download_dir),
             )),
             routes: Arc::new(RwLock::new(HashMap::new())),
+            qr_invitation,
+            qr_matches,
+            qr_receiver: Some(qr_receiver),
             #[cfg(target_os = "linux")]
             bluetooth: None,
         }
     }
     pub fn set_network_consent(&self, allowed: bool) {
         self.consent.store(allowed, Ordering::Release);
+    }
+    pub fn set_qr_invitation(&self, invitation: Option<Arc<QrInvitation>>) -> Result<()> {
+        if let Some(invitation) = &invitation {
+            ensure!(
+                self.options.lan
+                    && self.ctoken.as_ref().is_some_and(|token| !token.is_cancelled()),
+                "QR sending requires a running LAN engine"
+            );
+            ensure!(
+                !invitation.is_expired_at(std::time::Instant::now()),
+                "QR invitation has expired"
+            );
+        }
+        self.qr_invitation.send_replace(invitation);
+        Ok(())
+    }
+    pub fn take_qr_matches(&mut self) -> Result<mpsc::Receiver<QrPeer>> {
+        self.qr_receiver.take().ok_or_else(|| anyhow!("QR match receiver already taken"))
     }
     fn background_error(events: &broadcast::Sender<ChannelMessage>, error: String) {
         let _ = events.send(ChannelMessage {
@@ -269,7 +297,9 @@ impl RQS {
         let (proxy, _) = broadcast::channel(256);
         let mut receive = proxy.subscribe();
         let mdns = if self.options.lan {
-            Some(MDnsDiscovery::new(proxy.clone())?)
+            Some(MDnsDiscovery::new(
+                proxy.clone(), self.qr_invitation.subscribe(), self.qr_matches.clone(),
+            )?)
         } else {
             None
         };
@@ -361,6 +391,7 @@ impl RQS {
     }
     pub async fn stop(&mut self) {
         self.stop_discovery();
+        self.qr_invitation.send_replace(None);
         if let Some(token) = self.ctoken.take() {
             token.cancel();
         }
@@ -450,6 +481,27 @@ fn discovery_endpoint(peer: &EndpointInfo) -> Option<String> {
 mod discovery_route_tests {
     use super::*;
     use std::time::Instant;
+
+    #[test]
+    fn qr_context_requires_running_lan_but_cleanup_and_receiver_take_are_independent() {
+        let mut engine = RQS::default();
+        let invitation = Arc::new(QrInvitation::new().unwrap());
+        engine.set_qr_invitation(None).unwrap();
+        assert!(engine.set_qr_invitation(Some(invitation.clone())).is_err());
+        let _receive = engine.take_qr_matches().unwrap();
+        assert!(engine.take_qr_matches().is_err());
+        engine.ctoken = Some(CancellationToken::new());
+        engine.set_qr_invitation(Some(invitation.clone())).unwrap();
+        assert_eq!(engine.qr_invitation.borrow().as_ref().unwrap().id(), invitation.id());
+        engine.set_qr_invitation(None).unwrap();
+        assert!(engine.qr_invitation.borrow().is_none());
+        engine.options.lan = false;
+        assert!(engine.set_qr_invitation(Some(invitation.clone())).is_err());
+        engine.options.lan = true;
+        engine.ctoken.as_ref().unwrap().cancel();
+        assert!(engine.set_qr_invitation(Some(invitation)).is_err());
+        engine.set_qr_invitation(None).unwrap();
+    }
 
     fn lan(endpoint: &str, address: &str) -> EndpointInfo {
         let mut record = [3, 0, 0, 0, 0, 0xfc, 0x9f, 0x5e];

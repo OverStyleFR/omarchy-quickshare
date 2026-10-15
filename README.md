@@ -56,6 +56,8 @@ Received files go to your configured download folder. You can change it in the p
 
 Opening the panel never sends a file automatically. Closing it does not stop an active transfer; use **Cancel** when you want to stop.
 
+On **alpha 0.3.0-alpha.1**, you can also select files and choose **Show QR**. Scan it with Android Quick Share on the same local network, then confirm the verification code on the PC when requested. This requires the matching alpha backend; [QR instructions](docs/USER_GUIDE.md#send-with-an-android-quick-share-qr-code-alpha).
+
 ## Update or remove
 
 Finish or cancel active transfers first.

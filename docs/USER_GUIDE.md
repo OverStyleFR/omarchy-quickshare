@@ -53,6 +53,20 @@ Visibility is temporary. Its expiry stops new discovery offers, not an already e
 
 A manually selected destination that disappears is cleared, not replaced with another device. A preloaded file selection never starts sending by itself.
 
+### Send with an Android Quick Share QR code (alpha)
+
+Available in plugin and backend **0.3.0-alpha.1**:
+
+1. Connect the PC and Android device to the same local network. Keep Wi-Fi and Bluetooth enabled on Android.
+2. Select one or more files in the panel, or open a selection from Nautilus.
+3. Choose **Show QR**. You do not need to select a nearby destination.
+4. Scan the code with Android's Quick Share QR scanner, or its supported camera/Quick Settings QR scanner.
+5. When the transfer request appears, compare the verification code and confirm it on the PC. Handle any request shown on Android as well.
+
+The QR contains a temporary Quick Share public key, not file paths, Wi-Fi credentials or a web-download link. Only one invitation waits at a time; it expires after **120 seconds** and is consumed by the first matching receiver. **Close QR**, changing the selection or closing the panel withdraws a pending invitation. These actions do not cancel an already-created transfer: use its **Cancel** control.
+
+This QR flow discovers receivers over **LAN**; it does not implement Bluetooth-only QR discovery or permanent Bluetooth pairing. Existing Bluetooth sending and receiving remain available through the ordinary workflow. If **Show QR** asks you to update the service, updating QML alone is not sufficient; use **Settings → Service → Update service** from the alpha checkout.
+
 ### From Nautilus
 
 Select one or multiple local files, right-click and choose **Send via Quick Share**. This opens the panel with the exact selection; you still control the destination, Send and consent.

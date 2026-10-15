@@ -70,19 +70,6 @@ pub fn gen_mdns_endpoint_info(device_type: u8, device_name: &str) -> String {
         .serialize(),
     )
 }
-pub fn parse_mdns_endpoint_info(encoded: &str) -> Result<(DeviceType, String)> {
-    let info = URL_SAFE_NO_PAD.decode(encoded)?;
-    ensure!(info.len() >= 18, "short endpoint info");
-    let length = info[17] as usize;
-    ensure!(
-        length > 0 && info.len() >= 18 + length,
-        "invalid endpoint name length"
-    );
-    Ok((
-        DeviceType::from_raw_value((info[0] >> 1) & 7),
-        std::str::from_utf8(&info[18..18 + length])?.to_owned(),
-    ))
-}
 pub fn gen_ecdsa_keypair() -> (SecretKey, PublicKey) {
     let secret = SecretKey::random(&mut OsRng);
     let public = secret.public_key();
@@ -141,9 +128,11 @@ mod tests {
     fn endpoint_unicode_roundtrip_and_truncation_preserve_utf8() {
         for name in ["a_device", "equipo ñ", &"ñ".repeat(150)] {
             let encoded = gen_mdns_endpoint_info(3, name);
-            let (kind, decoded) = parse_mdns_endpoint_info(&encoded).unwrap();
-            assert_eq!(kind, DeviceType::Laptop);
-            assert!(name.starts_with(&decoded));
+            let bytes = URL_SAFE_NO_PAD.decode(encoded).unwrap();
+            let metadata = crate::qr::parse_endpoint_metadata(&bytes).unwrap();
+            assert_eq!(metadata.device_type, DeviceType::Laptop);
+            let decoded = metadata.name.unwrap();
+            assert!(name.starts_with(decoded));
             assert!(decoded.len() <= 255);
         }
     }

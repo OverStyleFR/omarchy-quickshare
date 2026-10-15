@@ -28,6 +28,9 @@ Item {
   property var selectedFiles: []
   property int selectionGeneration: 0
   property var pendingShare: null
+  property bool qrPendingStart: false
+  property bool qrCancelAfterStart: false
+  property string qrStoppingId: ""
   property var localIssue: null
   readonly property string localError: localIssue ? tr(localIssue.en, localIssue.es) + (localIssue.detail ? "\n" + localIssue.detail : "") : ""
   property var entrySettings: ({})
@@ -54,6 +57,11 @@ Item {
   readonly property bool busy: pendingCommands > 0 || setupBusy
   readonly property var devices: snapshot ? snapshot.devices : []
   readonly property var transfers: snapshot ? snapshot.transfers : []
+  readonly property bool qrSendSupported: online && !!snapshot && snapshot.qr_send_supported === true
+  readonly property var qrSend: online && !qrCancelAfterStart && snapshot && snapshot.qr_send
+    && snapshot.qr_send.id !== qrStoppingId && snapshot.qr_send.expires_at > now ? snapshot.qr_send : null
+  readonly property int qrRemainingSeconds: qrSend ? Math.max(0, Math.ceil(qrSend.expires_at - now)) : 0
+  onSelectedFilesChanged: stopQr()
   readonly property bool discoverable: online && snapshot && snapshot.visible &&
     (snapshot.visibility_expires_at === null || snapshot.visibility_expires_at > now)
   readonly property int remainingSeconds: discoverable && snapshot.visibility_expires_at !== null
@@ -284,8 +292,25 @@ Item {
     picking = true
     invoke(["pick-files"], "picker", "", undefined, requestGeneration)
   }
+  function showQr() {
+    if (!online || busy || qrPendingStart || !qrSendSupported || !backendInstalled || !backendCompatible ||
+        selectedFiles.length === 0 || !snapshot.capabilities || !snapshot.capabilities.lan) return
+    qrPendingStart = true
+    qrCancelAfterStart = false
+    invoke(["qr-send"], "qr-send", "", selectedFiles, selectionGeneration)
+  }
+  function stopQrId(id) {
+    if (!id || id === qrStoppingId || !online || serviceDisabled || !backendInstalled || !backendCompatible) return
+    qrStoppingId = id
+    invoke(["qr-stop", id], "qr-stop", id)
+  }
+  function stopQr() {
+    if (qrPendingStart) qrCancelAfterStart = true
+    var pending = snapshot && snapshot.qr_send
+    if (pending) stopQrId(pending.id)
+  }
   function send(peer) {
-    if (!online || busy || !peer || selectedFiles.length === 0) return
+    if (!online || busy || qrSend || qrPendingStart || !peer || selectedFiles.length === 0) return
     invoke(["send", peer], "send", "", selectedFiles)
   }
   function respond(id, accept) { invoke([accept ? "accept" : "reject", id]) }
@@ -313,6 +338,7 @@ Item {
   Component.onCompleted: probeBackend()
   Component.onDestruction: {
     stopTransferEffectsPreview()
+    stopQr()
     effectsAnchorWindow = null
   }
   Timer {
@@ -358,7 +384,7 @@ Item {
   }
   Process {
     id: backendProbe
-    command: ["bash", "-c", "binary=''; if [[ -x /usr/bin/omarchy-quickshare ]]; then binary=/usr/bin/omarchy-quickshare; elif [[ -x \"$1/.local/bin/omarchy-quickshare\" ]]; then binary=\"$1/.local/bin/omarchy-quickshare\"; fi; compatible=false; if [[ -n $binary ]]; then version=$(\"$binary\" --version) || exit 1; version=${version##* }; if [[ $version =~ ^[0-9]+\\.[0-9]+\\.[0-9]+$ ]] && [[ $(vercmp \"$version\" 0.1.2) -ge 0 ]]; then compatible=true; fi; fi; jq -cn --arg binary \"$binary\" --argjson compatible \"$compatible\" '{binary:$binary,compatible:$compatible}'", "bash", Quickshell.env("HOME")]
+    command: ["bash", "-c", "binary=''; if [[ -x /usr/bin/omarchy-quickshare ]]; then binary=/usr/bin/omarchy-quickshare; elif [[ -x \"$1/.local/bin/omarchy-quickshare\" ]]; then binary=\"$1/.local/bin/omarchy-quickshare\"; fi; compatible=false; if [[ -n $binary ]]; then version=$(\"$binary\" --version) || exit 1; version=${version##* }; if [[ $version =~ ^[0-9]+\\.[0-9]+\\.[0-9]+(-[0-9A-Za-z]+([.-][0-9A-Za-z]+)*)?$ ]] && [[ $(vercmp \"$version\" 0.1.2) -ge 0 ]]; then compatible=true; fi; fi; jq -cn --arg binary \"$binary\" --argjson compatible \"$compatible\" '{binary:$binary,compatible:$compatible}'", "bash", Quickshell.env("HOME")]
     stdout: StdioCollector { id: backendOutput; waitForEnd: true }
     onExited: function(code) {
       var result = {}
@@ -493,12 +519,15 @@ Item {
       function finish(exitCode, exitStatus) {
         if (purpose !== "picker") root.pendingCommands--
         if (purpose === "picker") root.picking = false
+        if (purpose === "qr-send") root.qrPendingStart = false
         if ((purpose === "picker" || purpose === "take-share") && selectionRequest !== root.selectionGeneration) {
           Qt.callLater(function() { task.destroy() })
           return
         }
         if (exitCode !== 0 || exitStatus !== 0) {
           if (purpose === "cancel") root.clearCancellationRequest(transferId)
+          if (purpose === "qr-send") root.qrCancelAfterStart = true
+          if (purpose === "qr-stop" && root.qrStoppingId === transferId) root.qrStoppingId = ""
           if (purpose === "effects-preference") {
             root.effectsPreferenceWriting = false
             root.effectsPreferenceFailed("Cannot persist the animation preference.", "No se pudo conservar la preferencia de animaciones.", errors.text.trim())
@@ -524,6 +553,14 @@ Item {
             }
           }
           if (purpose === "snapshot") root.consume(output.text, sourceGeneration)
+          else if (purpose === "qr-send") {
+            try {
+              var invitation = JSON.parse(output.text)
+              if (!invitation || typeof invitation.id !== "string") throw new Error("Invalid QR invitation")
+              if (root.qrCancelAfterStart || selectionRequest !== root.selectionGeneration)
+                root.stopQrId(invitation.id)
+            } catch (e) { root.fail("Cannot read the QR invitation.", "No se pudo leer la invitación QR.", e.message) }
+          }
           else if (purpose === "picker") {
             try {
               var files = JSON.parse(output.text)
