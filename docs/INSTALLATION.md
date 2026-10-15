@@ -143,7 +143,7 @@ Package builds use the user's cache rather than memory-backed `/tmp` by default 
 
 ## Trying native QR sending on alpha
 
-Native QR sending requires **0.3.0-alpha.1** of both the plugin and backend. The stable `main` channel and its marketplace review are not changed by alpha publication.
+Native QR sending is available in **0.3.0-alpha.2** of both the plugin and backend, including the native-folder security correction from stable 0.2.5. QR remains outside the stable `main` channel and its marketplace review.
 
 For an existing Git-based native installation, preserve local modifications first:
 
@@ -155,7 +155,7 @@ git -C "$plugin" merge --ff-only origin/alpha
 omarchy restart shell
 ```
 
-Finish or cancel active transfers, then explicitly choose **Settings → Service → Update service** and authorize the setup terminal's stated changes. Reloading the shell or fetching alpha does not replace the running daemon. The prerelease version is read from the manifest/actual CLI, not inferred from the branch. Arch packages use `0.3.0alpha1` for the package version while the application and corresponding source use `0.3.0-alpha.1`.
+Finish or cancel active transfers, then explicitly choose **Settings → Service → Update service** and authorize the setup terminal's stated changes. Reloading the shell or fetching alpha does not replace the running daemon. The prerelease version is read from the manifest/actual CLI, not inferred from the branch. Arch packages use `0.3.0alpha2` for the package version while the application and corresponding source use `0.3.0-alpha.2`.
 
 ## Returning an existing alpha checkout to main
 
