@@ -10,6 +10,7 @@ use crate::hdl::{OutboundPayload, State};
 use crate::lan_upgrade::{LanUpgradeHost, LanUpgradeRegistration};
 use crate::location_nearby_connections as n;
 use crate::network::{LanInterface, NetworkLease, NetworkManager};
+use crate::qr::QrInvitation;
 use crate::sharing_nearby as q;
 use crate::storage::IncomingFiles;
 use crate::transport::{FramedStream, TransportStream};
@@ -118,6 +119,7 @@ pub struct Session {
     phase: Phase,
     handshake: Option<Handshake>,
     crypto: Option<Crypto>,
+    qr_invitation: Option<Arc<QrInvitation>>,
     sender: broadcast::Sender<ChannelMessage>,
     receiver: broadcast::Receiver<ChannelMessage>,
     metadata: TransferMetadata,
@@ -306,6 +308,7 @@ impl Session {
             },
             handshake: None,
             crypto: None,
+            qr_invitation: None,
             sender,
             receiver,
             metadata,
@@ -341,6 +344,16 @@ impl Session {
     }
     pub(crate) fn set_initial_request(&mut self, request: n::ConnectionRequestFrame) {
         self.initial_request = Some(request);
+    }
+    pub(crate) fn set_qr_invitation(&mut self, invitation: Arc<QrInvitation>) -> Result<()> {
+        ensure!(
+            self.outbound && self.phase == Phase::ServerInit && self.crypto.is_none()
+                && self.transport == "lan" && self.remote_endpoint.is_some()
+                && self.qr_invitation.is_none(),
+            "QR key requires an unstarted outbound LAN session"
+        );
+        self.qr_invitation = Some(invitation);
+        Ok(())
     }
     pub fn event(&self, error: Option<String>) {
         let meta = if matches!(self.state, State::SendingFiles | State::ReceivingFiles) {
@@ -510,11 +523,16 @@ impl Session {
     async fn paired_encryption(&mut self) -> Result<()> {
         // No Google identity/contact certificates: protocol explicitly falls back
         // to the UKEY PIN, never claims authenticated contact identity.
+        let qr_code_handshake_data = self.qr_invitation.as_ref().map(|invitation| {
+            let crypto = self.crypto.as_ref().ok_or_else(|| anyhow!("QR proof before UKEY2"))?;
+            Ok::<_, anyhow::Error>(invitation.sign_auth_token(crypto.auth_token()).to_vec())
+        }).transpose()?;
         self.share(sharing(q::V1Frame {
             r#type: Some(ShareType::PairedKeyEncryption.into()),
             paired_key_encryption: Some(q::PairedKeyEncryptionFrame {
                 secret_id_hash: Some(crate::utils::gen_random(6)),
                 signed_data: Some(crate::utils::gen_random(72)),
+                qr_code_handshake_data,
                 ..Default::default()
             }),
             ..Default::default()
@@ -2498,6 +2516,79 @@ mod tests {
         }
         Ok(())
     }
+    #[tokio::test]
+    async fn qr_proof_is_bound_to_ukey2_and_never_replaces_either_consent_gate() {
+        use base64::{engine::general_purpose::URL_SAFE_NO_PAD, Engine};
+        use p256::ecdsa::{signature::Verifier, Signature, VerifyingKey};
+        for with_qr in [false, true] {
+            for remote_first in [false, true] {
+                let (mut session, mut socket) = session();
+                session.outbound = true;
+                session.transport = "lan".into();
+                session.enter(Phase::ServerInit);
+                let invitation = Arc::new(QrInvitation::new().unwrap());
+                if with_qr { session.set_qr_invitation(invitation.clone()).unwrap(); }
+                let (crypto, mut peer) = pair();
+                let auth = *peer.auth_token();
+                session.crypto = Some(crypto);
+                session.paired_encryption().await.unwrap();
+                let bytes = peer.open(&socket.read_frame().await.unwrap()).unwrap();
+                let frame = n::OfflineFrame::decode(bytes.as_slice()).unwrap();
+                let payload = frame.v1.unwrap().payload_transfer.unwrap();
+                let share = q::Frame::decode(payload.payload_chunk.unwrap().body()).unwrap();
+                let encryption = share.v1.unwrap().paired_key_encryption.unwrap();
+                if with_qr {
+                    let wire = URL_SAFE_NO_PAD.decode(invitation.url().split_once("#key=").unwrap().1).unwrap();
+                    let verifier = VerifyingKey::from_sec1_bytes(&wire[2..]).unwrap();
+                    let proof = encryption.qr_code_handshake_data.unwrap();
+                    assert_eq!(proof.len(), 64);
+                    let signature = Signature::from_slice(&proof).unwrap();
+                    verifier.verify(&auth, &signature).unwrap();
+                    let (_, unrelated) = pair();
+                    assert!(verifier.verify(unrelated.auth_token(), &signature).is_err());
+                    assert!(verifier.verify(session.crypto.as_ref().unwrap().pin.as_bytes(), &signature).is_err());
+                } else {
+                    assert!(encryption.qr_code_handshake_data.is_none());
+                }
+                peer.open(&socket.read_frame().await.unwrap()).unwrap(); // terminal BYTES chunk
+                assert!(!session.locally_verified);
+                assert!(!session.remote_accepted);
+                session.enter(Phase::Consent);
+                if remote_first {
+                    session.receive_share(accepted()).await.unwrap();
+                    assert_eq!(session.phase, Phase::Consent);
+                    assert!(session.send_next().await.is_err());
+                    session.accept().await.unwrap();
+                } else {
+                    session.accept().await.unwrap();
+                    assert_eq!(session.phase, Phase::Response);
+                    assert!(session.send_next().await.is_err());
+                    session.receive_share(accepted()).await.unwrap();
+                }
+                assert_eq!(session.phase, Phase::Transfer);
+                assert!(session.locally_verified && session.remote_accepted);
+            }
+        }
+    }
+
+    #[tokio::test]
+    async fn qr_key_attachment_rejects_inbound_started_and_non_lan_sessions() {
+        let invitation = Arc::new(QrInvitation::new().unwrap());
+        let (mut session, _socket) = session();
+        assert!(session.set_qr_invitation(invitation.clone()).is_err());
+        session.outbound = true;
+        session.enter(Phase::ServerInit);
+        assert!(session.set_qr_invitation(invitation.clone()).is_err());
+        session.transport = "lan".into();
+        session.crypto = Some(pair().0);
+        assert!(session.set_qr_invitation(invitation.clone()).is_err());
+        session.crypto = None;
+        session.set_qr_invitation(invitation.clone()).unwrap();
+        assert!(session.paired_encryption().await.is_err(), "cannot produce a QR signature before UKEY2");
+        assert!(session.set_qr_invitation(invitation).is_err(), "cannot replace a transfer's key");
+        assert!(!session.locally_verified && !session.remote_accepted);
+    }
+
     #[tokio::test]
     async fn native_ancillary_controls_preserve_introduction_and_consent() {
         let (mut session, _socket) = session();

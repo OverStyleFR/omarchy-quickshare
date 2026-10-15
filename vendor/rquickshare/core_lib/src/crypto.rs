@@ -27,6 +27,7 @@ pub struct Crypto {
     recv_mac: [u8; 32],
     send_sequence: i32,
     recv_sequence: i32,
+    auth_token: [u8; 32],
     pub pin: String,
 }
 fn public_bytes(secret: &SecretKey) -> Result<Vec<u8>> {
@@ -211,12 +212,9 @@ impl Handshake {
         let mut transcript = Vec::with_capacity(self.client_init.len() + self.server_init.len());
         transcript.extend_from_slice(&self.client_init);
         transcript.extend_from_slice(&self.server_init);
-        let pin = to_four_digit_string(&hkdf_extract_expand(
-            b"UKEY2 v1 auth",
-            &derived,
-            &transcript,
-            32,
-        )?);
+        let auth = hkdf_extract_expand(b"UKEY2 v1 auth", &derived, &transcript, 32)?;
+        let pin = to_four_digit_string(&auth);
+        let auth_token = auth.try_into().map_err(|_| anyhow!("auth token length"))?;
         let next = hkdf_extract_expand(b"UKEY2 v1 next", &derived, &transcript, 32)?;
         let salt = hex::decode("82AA55A0D397F88346CA1CEE8D3909B95F13FA7DEB1D4AB38376B8256DA85510")?;
         let key_salt =
@@ -239,11 +237,15 @@ impl Handshake {
                 .map_err(|_| anyhow!("key length"))?,
             send_sequence: 0,
             recv_sequence: 0,
+            auth_token,
             pin,
         })
     }
 }
 impl Crypto {
+    pub(crate) fn auth_token(&self) -> &[u8; 32] {
+        &self.auth_token
+    }
     pub fn seal(&mut self, bytes: Vec<u8>) -> Result<Vec<u8>> {
         self.send_sequence = self
             .send_sequence
@@ -336,6 +338,8 @@ mod tests {
     fn encrypted_peers_match_pin_and_reject_replay_and_mutation() {
         let (mut c, mut s) = pair();
         assert_eq!(c.pin, s.pin);
+        assert_eq!(c.auth_token(), s.auth_token());
+        assert_eq!(c.pin, to_four_digit_string(&c.auth_token().to_vec()));
         let bytes = c.seal(b"private".to_vec()).unwrap();
         assert_eq!(s.open(&bytes).unwrap(), b"private");
         assert!(s.open(&bytes).is_err());

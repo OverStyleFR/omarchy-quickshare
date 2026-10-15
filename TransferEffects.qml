@@ -66,8 +66,9 @@ Scope {
     var position = bar ? bar.position : "top"
     var strip = barWindow ? ((position === "top" || position === "bottom") ? barWindow.height : barWindow.width) : 0
     var inset = Style.space(16)
-    var left = position === "left" ? strip + inset : screenWidth - w - inset
-    var top = position === "bottom" ? screenHeight - strip - h - inset : position === "top" ? strip + inset : screenHeight - h - inset
+    // Toasts stack at the upper right; keep the companion in its own corner.
+    var left = position === "left" ? strip + inset : inset
+    var top = screenHeight - h - inset - (position === "bottom" ? strip : 0)
     return Qt.rect(Math.round(Math.max(0, Math.min(left, screenWidth - w))),
                    Math.round(Math.max(0, Math.min(top, screenHeight - h))), Math.round(w), Math.round(h))
   }

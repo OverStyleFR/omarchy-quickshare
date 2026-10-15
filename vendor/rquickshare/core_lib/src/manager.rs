@@ -3,6 +3,7 @@ use crate::{
     hdl::{OutboundPayload, State, Visibility},
     lan_upgrade::{LanCandidate, LanUpgradeHost},
     location_nearby_connections as n,
+    qr::{QrInvitation, QrSendContext},
     session::Session,
     transport::{FrameReader, TransportStream},
 };
@@ -23,6 +24,7 @@ pub struct SendInfo {
     pub addr: String,
     pub ob: OutboundPayload,
     pub cancellation: CancellationToken,
+    pub qr: Option<QrSendContext>,
 }
 #[derive(Debug, Clone)]
 pub struct Route {
@@ -218,6 +220,7 @@ impl Manager {
             None,
             None,
             initial_request,
+            None,
             token.clone(),
         )
         .await;
@@ -255,13 +258,29 @@ impl Manager {
             state: Some(State::Initial),
             ..Default::default()
         });
-        let route = self.routes.read().get(&send.addr).cloned();
-        let (remote_endpoint, preferred, fallback) = match route {
-            Some(route) => (Some(route.endpoint), route.preferred, route.fallback),
-            None => (None, None, None),
+        // QR association is to this exact advertised LAN socket. A route-cache
+        // preference/fallback must never redirect its private invitation proof.
+        let route = send.qr.is_none().then(|| self.routes.read().get(&send.addr).cloned()).flatten();
+        let (remote_endpoint, preferred, fallback) = match (&send.qr, route) {
+            (Some(qr), _) => (Some(qr.endpoint_id.clone()), None, None),
+            (None, Some(route)) => (Some(route.endpoint), route.preferred, route.fallback),
+            (None, None) => (None, None, None),
         };
-        let destinations = [preferred, Some(send.addr), fallback];
         let connection = async {
+            if let Some(qr) = &send.qr {
+                ensure!(self.lan, "QR sending requires LAN");
+                let address = send.addr.parse::<std::net::SocketAddrV4>()?;
+                ensure!(
+                    address.port() != 0
+                        && !address.ip().is_unspecified()
+                        && !address.ip().is_multicast()
+                        && !address.ip().is_broadcast()
+                        && qr.endpoint_id.len() == 4
+                        && qr.endpoint_id.bytes().all(|byte| byte.is_ascii_alphanumeric()),
+                    "invalid QR receiver endpoint"
+                );
+            }
+            let destinations = [preferred, Some(send.addr), fallback];
             let mut error = anyhow::anyhow!("no usable route");
             for route in destinations.into_iter().flatten() {
                 if route.starts_with("bt:") {
@@ -298,6 +317,7 @@ impl Manager {
                     Some(send.ob),
                     remote_endpoint,
                     None,
+                    send.qr.map(|qr| qr.invitation),
                     ctk.clone(),
                 )
                 .await
@@ -327,6 +347,7 @@ impl Manager {
         outgoing: Option<OutboundPayload>,
         remote_endpoint: Option<String>,
         initial_request: Option<n::ConnectionRequestFrame>,
+        qr_invitation: Option<Arc<QrInvitation>>,
         ctk: CancellationToken,
     ) {
         let download = self.download.clone();
@@ -357,6 +378,12 @@ impl Manager {
                 return;
             }
         };
+        if let Some(invitation) = qr_invitation {
+            if let Err(error) = session.set_qr_invitation(invitation) {
+                self.failure(&id, outgoing_flag, Some(transport.into()), error.to_string());
+                return;
+            }
+        }
         if let Some(request) = initial_request {
             session.set_initial_request(request);
         }
@@ -591,6 +618,7 @@ mod tests {
                 addr: peer.local_addr().unwrap().to_string(),
                 ob: OutboundPayload::Files(vec![source.0.to_str().unwrap().into()]),
                 cancellation: cancellation.clone(),
+                qr: None,
             })
             .unwrap();
         cancellation.cancel();
@@ -669,6 +697,7 @@ mod tests {
                             addr: address,
                             ob: OutboundPayload::Files(vec![path]),
                             cancellation: CancellationToken::new(),
+                            qr: None,
                         },
                         worker_token,
                     )
@@ -688,6 +717,51 @@ mod tests {
                     "the selected route must not be used while the preferred network is available"
                 );
             }
+        }
+    }
+
+    #[tokio::test]
+    async fn qr_sends_use_only_the_matched_lan_socket_without_preference_or_fallback() {
+        let source = Source(
+            std::env::temp_dir().join(format!("quickshare-qr-route-{}", uuid::Uuid::new_v4())),
+        );
+        std::fs::OpenOptions::new().write(true).create_new(true).open(&source.0)
+            .unwrap().write_all(b"QR still requires ordinary file consent").unwrap();
+        for matched_available in [true, false] {
+            let matched = TcpListener::bind("127.0.0.1:0").await.unwrap();
+            let address = matched.local_addr().unwrap().to_string();
+            let unrelated = std::net::TcpListener::bind("127.0.0.1:0").unwrap();
+            unrelated.set_nonblocking(true).unwrap();
+            let unrelated_address = unrelated.local_addr().unwrap().to_string();
+            let (_, visible) = watch::channel(Visibility::Invisible);
+            let (manager, _) = lan_manager(visible, LanUpgradeHost::new(1234));
+            manager.routes.write().insert(address.clone(), Route {
+                endpoint: "WRNG".into(),
+                preferred: Some(unrelated_address.clone()),
+                fallback: Some(unrelated_address),
+            });
+            let invitation = Arc::new(QrInvitation::new().unwrap());
+            let send = SendInfo {
+                id: "qr-route".into(), addr: address,
+                ob: OutboundPayload::Files(vec![source.0.to_str().unwrap().into()]),
+                cancellation: CancellationToken::new(),
+                qr: Some(QrSendContext { invitation, endpoint_id: "PEER".into() }),
+            };
+            let stop = CancellationToken::new();
+            if matched_available {
+                let worker_token = stop.clone();
+                let worker = tokio::spawn(async move { manager.connect(send, worker_token).await; });
+                let connection = tokio::time::timeout(Duration::from_secs(2), matched.accept())
+                    .await.expect("QR must connect directly to the matching receiver").unwrap();
+                stop.cancel();
+                drop(connection);
+                worker.await.unwrap();
+            } else {
+                drop(matched);
+                tokio::time::timeout(Duration::from_secs(2), manager.connect(send, stop))
+                    .await.expect("a failed QR socket must not try another route");
+            }
+            assert_eq!(unrelated.accept().unwrap_err().kind(), std::io::ErrorKind::WouldBlock);
         }
     }
 

@@ -108,6 +108,22 @@ A private executable exercised production mDNS record decoding, real TCP connect
 
 These records were synthetic and lease deadlines were explicit test instants, not a claimed 120-second wall-clock wait or native Android run. No multicast advertisement, radio change, network configuration change or host-service update was performed. The temporary runtime modules and executable were removed after observation.
 
+## Historical companion placement — alpha
+
+The closed-panel companion was moved to the lower-left corner without changing artwork, notification logic, activity captions, input handling or the panel halo. The actual Quickshell layer-shell component was exercised both from the installed checkout and the alpha source. Sending over LAN, receiving over Bluetooth and preparation remained visible with bars at the top, left, bottom and right; the overlay stayed inside the screen, clear of the bar and input-transparent. Both checkouts produced identical settled geometry, and disabling effects hid the surface.
+
+A native Omarchy toast and the companion were observed together in a live desktop capture: the toast remained legible in the upper-right corner and the companion occupied the lower-left. Panel-open projection retained its protected card/safety rectangle. The local plugin was rescanned through the native shell command; no backend restart, file transfer, radio operation or marketplace update was performed.
+
+## Historical native QR sending — 0.3.0-alpha.1
+
+The locked workspace suite passed **124 tests** with the consenting physical SDP regression ignored. New regressions cover published HKDF values, fixed-02 key reconstruction, visible/hidden metadata, malformed/duplicate TLVs, wrong keys/tampering, monotonic expiry, owner-safe cancellation, one-time claim, direct routing, UKEY2-bound P1363 proof and preservation of both consent gates.
+
+An independent Python protobuf/cryptography receiver ran across a private veth pair in separate user/network namespaces, with a private HOME and session bus. The actual Rust daemon used its real mDNS discovery, TCP probe, QR matching channel, command actor and session engine under NoNewPrivileges. Both visible-token and hidden AES-GCM-name receivers obtained **two files**, independently hashed to the original SHA-256 values. The receiver verified the actual wire QR signature using the public key reconstructed from the URL. Remote ACCEPT alone yielded no file bytes during the observation interval; explicit local verification then allowed transfer completion. Pending QR replacement and stale-owner cancellation were also exercised while receive visibility remained off. Host interfaces, radio state, firewall and network profiles were not changed.
+
+The actual Panel.qml and Service.qml ran against a real private QR backend. Showing QR without a selected peer, file count, close-during-start, selection-change withdrawal and panel-close withdrawal were exercised. The Spanish panel's rendered QR was decoded with an independent barcode reader; English live labels were inspected. Later capture attempts encountered the host display locked/DPMS off; it was not woken or unlocked.
+
+These are source/runtime and independent-peer interoperability observations, not a claim of a new physical Android QR scan. No host backend was installed or restarted and no marketplace update was requested. Temporary peers and UI/backend processes were removed after observation.
+
 ## Native download-folder selection — 0.2.5
 
 The editable download-path control was removed rather than hidden or made read-only. Runtime inspection of the real Panel.qml and native Omarchy components found no TextInput, TextEdit or TextField descendants with Settings collapsed or expanded. The replacement path label and folder action were rendered in English and Spanish.
@@ -123,6 +139,16 @@ The maintenance helper now distinguishes `LoadState=not-found` from existing loa
 A private HOME/session bus exercised the published ownership, pause and unit-installation helpers. With no user unit present, source-mode registration continued, created owned unit/drop-in and Nautilus registration, enabled its fixture target and started the actual Rust daemon under NoNewPrivileges. Its real v1 status had no transfers or errors. A second pause used the existing-unit path and shut the daemon down cleanly. Only manager/process control and package-mode detection used adapters; this is not a claim of a new host systemd installation or a new source compilation. The prebuilt 0.2.5 daemon was used because the correction is in the shell lifecycle, not the transfer engine.
 
 The user's installed service, preferences, radio/network configuration and received files were not modified by this lifecycle smoke.
+
+## Stable 0.3.0 promotion scope
+
+Stable **0.3.0** brings the native LAN QR invitation flow and lower-left companion into `main`, retaining the bounded-discovery, private native-folder-picker and first-install lifecycle fixes described above. The alpha companion and QR observations remain historical evidence from those builds.
+
+The integrated **0.3.0** workspace built with the locked dependency graph and passed **124 Rust tests**, with the consenting physical SDP regression ignored. All five shell lifecycle regressions, package-script syntax checks and native plugin validation passed.
+
+A fresh independent Python protobuf/cryptography receiver exercised the actual **0.3.0** Rust daemon across a private veth pair in separate user/network namespaces, with a private HOME and session bus and **NoNewPrivileges**. Four completed transfers covered visible-token and hidden AES-GCM-name receivers with both consent orders. Each delivered two files with independently matching SHA-256 hashes and verified the UKEY2-bound P1363 QR signature against the public key reconstructed from the URL. No file payload arrived during the 450 ms observation while the remaining local or remote consent was withheld. Replacement and owner-safe withdrawal passed; selected paths were absent from the QR view and receive visibility stayed off.
+
+These fresh checks establish independent-peer behavior, not a physical Android QR scan. No installed host backend, preferences, received files, radio settings or network configuration were modified.
 
 ## Evidence interpretation
 

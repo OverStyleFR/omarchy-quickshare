@@ -28,6 +28,18 @@ A transfer's medium and terminal result come from engine state, not a UI capabil
 
 Selected file paths travel through private stdin pipes and the user's session D-Bus, not subprocess arguments. `PrepareShare` holds a selection in daemon memory and returns an opaque token. The shell summon carries only that token; the panel retrieves the paths with `TakeShare`, which consumes the selection once. Pending selections expire after five minutes and are limited to 16. Opening a selection does not start a transfer. This boundary protects against other local users reading process command lines; it does not isolate the application from root or other processes in the same user session.
 
+Stable **0.3.0** includes `StartQrSend(files)` and ownership-safe `StopQrSend(invitationId)`. The CLI equivalents are `qr-send` (JSON paths on stdin) and `qr-stop ID` (opaque ID only). Snapshots add `qr_send_supported` and an optional `qr_send` view containing ID, public URL, SVG data URI, expiry, count and total size. The private signing key and pending paths are excluded from serialization.
+
+## Native QR sending
+
+The wire format follows [NearDrop's documented protocol and implementation](https://github.com/grishka/NearDrop/blob/add655c6c5a40b9ba03c0329b598f2817185f5a9/PROTOCOL.md#qr-codes). A new P-256 signing key is normalized to an even-Y point and encoded as `00 00 02 || X32`, base64url without padding, in `https://quickshare.google/qrcode#key=…`. HKDF-SHA256 over all 35 bytes derives the 16-byte advertising token (`advertisingContext`) and name key (`encryptionKey`).
+
+Android's scanner advertises a receiver endpoint; transport roles are not reversed. The existing bounded mDNS pipeline validates the service and TCP endpoint. A visible receiver's type-1 TLV matches the token, or its encrypted name is authenticated using AES-128-GCM (12-byte nonce, 16-byte tag, advertising token as AAD). Hidden matching names use a separate bounded private channel, not the public nearby-device list. Replaced and expired invitation IDs cannot claim a newer selection.
+
+One invitation waits for up to 120 monotonic seconds and is claimed once. The sender connects directly to the matched LAN socket without an unrelated route preference/fallback. Its encrypted `PairedKeyEncryptionFrame.qr_code_handshake_data` (field 4) carries ECDSA-P256/SHA256 over the raw 32-byte UKEY2 authentication token, serialized as P1363 `R32 || S32`. It does not sign the displayed PIN, reset session keys or replace either acceptance gate: local verification and remote ACCEPT still precede file bytes. The QR lifetime limits pending discovery, not an established transfer.
+
+This path uses LAN discovery, not Bluetooth QR TLVs or cloud download services. It neither turns on receive visibility nor creates firewall/network profiles. Treat a displayed QR as an invitation to request the selected files; only show it to intended recipients and compare the verification code.
+
 ## Local transports and authentication
 
 Direct LAN discovery uses mDNS and TCP, default port **47593**. Bluetooth discovery uses BLE/GATT metadata; file content travels through Classic RFCOMM rather than OBEX or GATT characteristics.
@@ -80,6 +92,8 @@ omarchy-quickshare pick-files | omarchy-quickshare share
 | Command | Effect |
 | --- | --- |
 | `send DEVICE_ID` | Request an outgoing transfer using a JSON file-path array on stdin |
+| `qr-send` | Create a short-lived native QR invitation for JSON file paths on stdin |
+| `qr-stop INVITATION_ID` | Withdraw only that pending QR invitation, not an established transfer |
 | `accept TRANSFER_ID` | Approve the identified request |
 | `reject TRANSFER_ID` | Reject the identified request |
 | `cancel TRANSFER_ID` | Request cancellation |

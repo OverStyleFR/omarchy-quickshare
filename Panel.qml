@@ -36,6 +36,9 @@ Ui.Panel {
   readonly property var devices: service ? service.devices : []
   readonly property bool connected: service && service.online
   readonly property bool enabledActions: connected && !service.busy
+  readonly property var qrInvitation: service && service.qrSend ? service.qrSend : null
+  readonly property bool qrSupported: !!service && service.qrSendSupported === true
+  readonly property bool lanAvailable: root.connected && !!service.snapshot && !!service.snapshot.capabilities && !!service.snapshot.capabilities.lan
   readonly property var displayedTransfers: service ? service.transfers.slice().reverse().sort(function(a, b) {
     return root.transferPriority(a) - root.transferPriority(b)
   }) : []
@@ -44,6 +47,15 @@ Ui.Panel {
   onDevicesChanged: updatePeerSelection()
   onDisplayedTransfersChanged: syncTransfers()
   Component.onCompleted: syncTransfers()
+  onOpenedChanged: {
+    if (!opened) stopPendingQr()
+  }
+  Component.onDestruction: stopPendingQr()
+
+  function stopPendingQr() {
+    // Also cancel a start still in flight; Service owns deferred cancellation.
+    if (service && typeof service.stopQr === "function") service.stopQr()
+  }
 
   ListModel { id: transferModel; dynamicRoles: true }
   function syncTransfers() {
@@ -469,8 +481,65 @@ Ui.Panel {
                 iconText: "󰒗"
                 text: root.tr("Send", "Enviar") + (service && service.selectedFiles.length > 0 ? " · " + service.selectedFiles.length + (service.selectedFiles.length === 1 ? root.tr(" file", " archivo") : root.tr(" files", " archivos")) : "")
                 active: enabled
-                enabled: root.enabledActions && root.selectedPeerAvailable && service.selectedFiles.length > 0
+                enabled: root.enabledActions && !root.qrInvitation && root.selectedPeerAvailable && service.selectedFiles.length > 0
                 onClicked: service.send(root.selectedPeer)
+              }
+              ActionButton {
+                Layout.fillWidth: true
+                text: root.tr("Show QR", "Mostrar QR")
+                tooltipText: root.tr("Send the selected files without choosing a nearby device", "Envía los archivos seleccionados sin elegir un dispositivo cercano")
+                enabled: root.enabledActions && root.qrSupported && root.lanAvailable && !root.qrInvitation && service.selectedFiles.length > 0
+                onClicked: service.showQr()
+              }
+              BodyText {
+                visible: !root.qrInvitation
+                text: !root.connected ? root.tr("Connect to the Quick Share service to show a QR code.", "Conecta con el servicio de Quick Share para mostrar un código QR.")
+                  : !root.qrSupported ? root.tr("Update the service to use Android Quick Share QR sending.", "Actualiza el servicio para enviar con QR de Quick Share de Android.")
+                  : !root.lanAvailable ? root.tr("QR sending requires an available local network. Connect both devices to the same network.", "El envío con QR requiere una red local disponible. Conecta ambos dispositivos a la misma red.")
+                  : root.tr("Or show a QR code for Android Quick Share on the same local network. No nearby device selection is needed.", "O muestra un código QR para Quick Share de Android en la misma red local. No hace falta seleccionar un dispositivo cercano.")
+                color: root.dim
+                font.pixelSize: Style.font.bodySmall
+              }
+              ColumnLayout {
+                id: qrColumn
+                visible: !!root.qrInvitation
+                Layout.fillWidth: true
+                spacing: Style.space(10)
+                BodyText {
+                  text: root.tr("Scan with Android Quick Share", "Escanea con Quick Share de Android")
+                  font.bold: true
+                }
+                Rectangle {
+                  id: qrSurface
+                  Layout.alignment: Qt.AlignHCenter
+                  Layout.preferredWidth: Math.min(Style.space(248), qrColumn.width)
+                  Layout.preferredHeight: width
+                  color: "#ffffff"
+                  Image {
+                    anchors.fill: parent
+                    anchors.margins: Style.space(12)
+                    source: root.qrInvitation ? root.qrInvitation.image : ""
+                    fillMode: Image.PreserveAspectFit
+                    smooth: false
+                    Accessible.role: Accessible.Graphic
+                    Accessible.name: root.tr("Quick Share invitation QR code", "Código QR de invitación de Quick Share")
+                  }
+                }
+                BodyText {
+                  text: root.qrInvitation ? String(root.qrInvitation.file_count) + (root.qrInvitation.file_count === 1 ? root.tr(" file", " archivo") : root.tr(" files", " archivos")) + " · " + root.tr("Expires in ", "Caduca en ") + Math.max(0, service.qrRemainingSeconds) + " s" : ""
+                  horizontalAlignment: Text.AlignHCenter
+                  font.bold: true
+                }
+                BodyText {
+                  text: root.tr("Keep both devices on the same local network. Scan this code with Android Quick Share, then compare and confirm the PIN when requested.", "Mantén ambos dispositivos en la misma red local. Escanea este código con Quick Share de Android y después compara y confirma el PIN cuando se solicite.")
+                  color: root.dim
+                  font.pixelSize: Style.font.bodySmall
+                }
+                ActionButton {
+                  Layout.fillWidth: true
+                  text: root.tr("Close QR", "Cerrar QR")
+                  onClicked: root.stopPendingQr()
+                }
               }
               BodyText {
                 text: root.tr("Compare the PIN on both devices before confirming.", "Compara el PIN en ambos dispositivos antes de confirmar.")

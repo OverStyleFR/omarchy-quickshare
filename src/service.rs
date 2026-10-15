@@ -3,10 +3,11 @@ use crate::ui_language::UiLanguage;
 use crate::{integration::NautilusIntegration, BUS, INTERFACE, PATH};
 use anyhow::{bail, Context, Result};
 use directories::{ProjectDirs, UserDirs};
+use base64::Engine as _;
 use rqs_lib::channel::{ChannelAction, ChannelDirection, ChannelMessage};
 use rqs_lib::{
-    EndpointInfo, EngineOptions, OutboundPayload, SendInfo, Visibility, DISCOVERY_PEER_LIMIT,
-    LAN_PEER_TTL, RQS,
+    EndpointInfo, EngineOptions, OutboundPayload, QrInvitation, QrPeer, QrSendContext, SendInfo,
+    Visibility, DISCOVERY_PEER_LIMIT, LAN_PEER_TTL, RQS,
 };
 use serde::{Deserialize, Serialize};
 use std::collections::BTreeMap;
@@ -115,9 +116,40 @@ struct Snapshot {
     transfers: Vec<Transfer>,
     capabilities: Capabilities,
     errors: Vec<String>,
+    qr_send_supported: bool,
+    qr_send: Option<QrOffer>,
+}
+
+#[derive(Clone, Serialize)]
+struct QrView {
+    id: String,
+    url: String,
+    image: String,
+    expires_at: u64,
+    file_count: usize,
+    total_bytes: u64,
+}
+
+#[derive(Serialize)]
+struct QrOffer {
+    #[serde(flatten)]
+    view: QrView,
+    #[serde(skip)]
+    invitation: Arc<QrInvitation>,
+    #[serde(skip)]
+    files: Vec<String>,
 }
 
 impl Snapshot {
+    fn expire_qr(&mut self, at: Instant) -> bool {
+        if self.qr_send.as_ref().is_some_and(|offer| offer.invitation.is_expired_at(at)) {
+            self.qr_send = None;
+            true
+        } else {
+            false
+        }
+    }
+
     fn expire_devices(&mut self, at: Instant) -> bool {
         let previous = self.devices.len();
         self.devices.retain(|device| {
@@ -216,7 +248,7 @@ impl Shared {
     }
     async fn snapshot_at(&self, at: Instant) -> Result<String> {
         let mut state = self.state.write().await;
-        if state.expire_devices(at) {
+        if state.expire_devices(at) | state.expire_qr(at) {
             self.changed();
         }
         Ok(serde_json::to_string(&SnapshotEnvelope {
@@ -266,6 +298,12 @@ impl Interface {
     async fn send(&self, peer_id: String, files: Vec<String>) -> zbus::fdo::Result<String> {
         self.0.execute(Action::Send(peer_id, files)).await
     }
+    async fn start_qr_send(&self, files: Vec<String>) -> zbus::fdo::Result<String> {
+        self.0.execute(Action::QrSend(files)).await
+    }
+    async fn stop_qr_send(&self, id: String) -> zbus::fdo::Result<()> {
+        self.0.execute(Action::QrStop(id)).await.map(|_| ())
+    }
     async fn prepare_share(&self, files: Vec<String>) -> zbus::fdo::Result<String> {
         self.0
             .share_selections
@@ -308,6 +346,8 @@ enum Action {
     Visibility(u32),
     NetworkConsent(bool),
     Send(String, Vec<String>),
+    QrSend(Vec<String>),
+    QrStop(String),
     Respond(String, bool),
     Cancel(String),
     Directory(String),
@@ -376,83 +416,43 @@ async fn apply_operation_at(
             shared.state.write().await.network_consent = allowed;
         }
         Action::Send(peer_id, paths) => {
-            if paths.is_empty() || paths.len() > 1000 {
-                bail!("Selecciona entre 1 y 1000 archivos");
-            }
             let device_name = {
                 let mut state = shared.state.write().await;
                 if state.expire_devices(at) {
                     shared.changed();
                 }
-                if state
-                    .transfers
-                    .iter()
-                    .filter(|t| !terminal(t.state))
-                    .count()
-                    >= 16
-                {
-                    bail!("Hay demasiadas transferencias activas");
-                }
-                state
-                    .devices
-                    .iter()
-                    .find(|d| d.id == peer_id)
+                ensure_send_capacity(&state)?;
+                state.devices.iter().find(|device| device.id == peer_id)
                     .map(|device| device.name.clone())
                     .context("El dispositivo ya no está disponible")?
             };
-            let mut files = Vec::with_capacity(paths.len());
-            let mut total_bytes = 0_u64;
-            for path in paths {
-                let path = PathBuf::from(path);
-                if !path.is_absolute() {
-                    bail!("Las rutas deben ser absolutas");
-                }
-                let metadata = tokio::fs::metadata(&path).await?;
-                if !metadata.is_file() {
-                    bail!("Solo se pueden enviar archivos normales");
-                }
-                total_bytes = total_bytes
-                    .checked_add(metadata.len())
-                    .context("Tamaño total no representable")?;
-                let path = tokio::fs::canonicalize(path).await?;
-                tokio::fs::File::open(&path).await?;
-                files.push(path.to_str().context("Ruta no representable")?.to_owned());
-            }
-            let id = uuid::Uuid::new_v4().to_string();
-            let cancellation = CancellationToken::new();
-            // Keep state visible before the engine can emit its first event.
-            shared.state.write().await.transfers.push(Transfer {
-                id: id.clone(),
-                direction: "outbound",
-                state: "connecting",
-                pin_code: None,
-                device_name,
-                files: files.clone(),
-                total_bytes,
-                transferred_bytes: 0,
-                transport: None,
-                error: None,
-                cancellation: Some(cancellation.clone()),
-            });
-            if let Err(error) = sender
-                .send(SendInfo {
-                    id: id.clone(),
-                    addr: peer_id,
-                    ob: OutboundPayload::Files(files),
-                    cancellation,
-                })
-                .await
+            let (files, total_bytes) = prepare_files(paths).await?;
+            return enqueue_send(shared, sender, peer_id, device_name, files, total_bytes, None).await;
+        }
+        Action::QrSend(paths) => {
             {
-                let mut state = shared.state.write().await;
-                if let Some(transfer) = state.transfers.iter_mut().find(|t| t.id == id) {
-                    transfer.state = "failed";
-                    transfer.error = Some(error.to_string());
+                let state = shared.state.read().await;
+                ensure_send_capacity(&state)?;
+                if !state.capabilities.lan {
+                    bail!("El QR nativo requiere una red local disponible en ambos dispositivos");
                 }
-                shared.changed();
-                return Err(error.into());
             }
+            let (files, total_bytes) = prepare_files(paths).await?;
+            let invitation = Arc::new(QrInvitation::new()?);
+            let view = qr_view(&invitation, files.len(), total_bytes)?;
+            let response = serde_json::to_string(&view)?;
+            engine.set_qr_invitation(Some(invitation.clone()))?;
+            shared.state.write().await.qr_send = Some(QrOffer { view, invitation, files });
             shared.changed();
-            return Ok(id);
+            return Ok(response);
+        }
+        Action::QrStop(id) => {
+            let mut state = shared.state.write().await;
+            if state.qr_send.as_ref().is_some_and(|offer| offer.view.id == id) {
+                state.qr_send = None;
+                engine.set_qr_invitation(None)?;
+                shared.changed();
+            }
         }
         Action::Respond(id, accept) => {
             let state = shared.state.read().await;
@@ -527,6 +527,114 @@ async fn apply_operation_at(
     }
     shared.changed();
     Ok(String::new())
+}
+
+fn ensure_send_capacity(state: &Snapshot) -> Result<()> {
+    if state.transfers.iter().filter(|transfer| !terminal(transfer.state)).count() >= 16 {
+        bail!("Hay demasiadas transferencias activas");
+    }
+    Ok(())
+}
+
+async fn prepare_files(paths: Vec<String>) -> Result<(Vec<String>, u64)> {
+    if paths.is_empty() || paths.len() > 1000 {
+        bail!("Selecciona entre 1 y 1000 archivos");
+    }
+    let mut files = Vec::with_capacity(paths.len());
+    let mut total_bytes = 0_u64;
+    for path in paths {
+        let path = PathBuf::from(path);
+        if !path.is_absolute() {
+            bail!("Las rutas deben ser absolutas");
+        }
+        let metadata = tokio::fs::metadata(&path).await?;
+        if !metadata.is_file() {
+            bail!("Solo se pueden enviar archivos normales");
+        }
+        total_bytes = total_bytes.checked_add(metadata.len()).context("Tamaño total no representable")?;
+        let path = tokio::fs::canonicalize(path).await?;
+        tokio::fs::File::open(&path).await?;
+        files.push(path.to_str().context("Ruta no representable")?.to_owned());
+    }
+    Ok((files, total_bytes))
+}
+
+fn qr_view(invitation: &QrInvitation, file_count: usize, total_bytes: u64) -> Result<QrView> {
+    let svg = qrcode::QrCode::new(invitation.url().as_bytes())?
+        .render::<qrcode::render::svg::Color>()
+        .min_dimensions(256, 256)
+        .quiet_zone(true)
+        .dark_color(qrcode::render::svg::Color("#000000"))
+        .light_color(qrcode::render::svg::Color("#ffffff"))
+        .build();
+    Ok(QrView {
+        id: invitation.id().to_owned(),
+        url: invitation.url().to_owned(),
+        image: format!("data:image/svg+xml;base64,{}", base64::engine::general_purpose::STANDARD.encode(svg)),
+        expires_at: now() + invitation.expires_at().saturating_duration_since(Instant::now()).as_secs(),
+        file_count,
+        total_bytes,
+    })
+}
+
+async fn enqueue_send(
+    shared: &Shared,
+    sender: &mpsc::Sender<SendInfo>,
+    peer_id: String,
+    device_name: String,
+    files: Vec<String>,
+    total_bytes: u64,
+    qr: Option<QrSendContext>,
+) -> Result<String> {
+    let id = uuid::Uuid::new_v4().to_string();
+    let cancellation = CancellationToken::new();
+    let mut state = shared.state.write().await;
+    ensure_send_capacity(&state)?;
+    state.transfers.push(Transfer {
+        id: id.clone(), direction: "outbound", state: "connecting", pin_code: None,
+        device_name, files: files.clone(), total_bytes, transferred_bytes: 0,
+        transport: None, error: None, cancellation: Some(cancellation.clone()),
+    });
+    drop(state);
+    if let Err(error) = sender.send(SendInfo {
+        id: id.clone(), addr: peer_id, ob: OutboundPayload::Files(files), cancellation, qr,
+    }).await {
+        let mut state = shared.state.write().await;
+        if let Some(transfer) = state.transfers.iter_mut().find(|transfer| transfer.id == id) {
+            transfer.state = "failed";
+            transfer.error = Some(error.to_string());
+        }
+        shared.changed();
+        return Err(error.into());
+    }
+    shared.changed();
+    Ok(id)
+}
+
+async fn claim_qr(
+    shared: &Shared,
+    engine: &RQS,
+    sender: &mpsc::Sender<SendInfo>,
+    matched: QrPeer,
+    at: Instant,
+) -> Result<Option<String>> {
+    let mut state = shared.state.write().await;
+    if state.expire_qr(at) {
+        engine.set_qr_invitation(None)?;
+        shared.changed();
+    }
+    if !state.qr_send.as_ref().is_some_and(|offer| offer.view.id == matched.invitation_id) {
+        return Ok(None);
+    }
+    let offer = state.qr_send.take().expect("matched pending invitation");
+    drop(state);
+    engine.set_qr_invitation(None)?;
+    shared.changed();
+    let (files, total_bytes) = prepare_files(offer.files).await?;
+    let id = enqueue_send(shared, sender, matched.peer.id,
+        matched.peer.name.unwrap_or_else(|| "Android".into()), files, total_bytes,
+        Some(QrSendContext { invitation: offer.invitation, endpoint_id: matched.endpoint_id })).await?;
+    Ok(Some(id))
 }
 
 fn normalized_state(state: &rqs_lib::State) -> &'static str {
@@ -766,6 +874,8 @@ pub async fn serve(port: u16, download: Option<PathBuf>, options: EngineOptions)
             transfers: Vec::new(),
             capabilities,
             errors: Vec::new(),
+            qr_send_supported: true,
+            qr_send: None,
         }),
         share_selections: RwLock::new(ShareSelections::default()),
         revisions,
@@ -797,6 +907,7 @@ pub async fn serve(port: u16, download: Option<PathBuf>, options: EngineOptions)
     let mut integration_monitor_active = true;
     let outgoing = engine.run().await?;
     engine.discovery(devices_tx)?;
+    let mut qr_matches = engine.take_qr_matches()?;
     let signal_connection = connection.clone();
     let signal_shared = shared.clone();
     let publisher = tokio::spawn(async move {
@@ -844,6 +955,14 @@ pub async fn serve(port: u16, download: Option<PathBuf>, options: EngineOptions)
                 let result = apply_operation(&shared, &mut engine, &outgoing, operation.command).await;
                 let _ = operation.reply.send(result);
             }
+            Some(matched) = qr_matches.recv() => {
+                if let Err(error) = claim_qr(&shared, &engine, &outgoing, matched, Instant::now()).await {
+                    let mut state = shared.state.write().await;
+                    if state.errors.len() >= 100 { state.errors.remove(0); }
+                    state.errors.push(format!("No se pudo iniciar el envío QR: {error}"));
+                    shared.changed();
+                }
+            }
             event = events.recv() => match event {
                 Ok(event) => if let Some(transfer) = handle_message(&shared, event).await {
                     match notify(&connection, &transfer, &shell_config).await {
@@ -888,6 +1007,10 @@ pub async fn serve(port: u16, download: Option<PathBuf>, options: EngineOptions)
             _ = expiry.tick() => {
                 shared.share_selections.write().await.expire(Instant::now());
                 shared.expire_devices_at(Instant::now()).await;
+                let mut state = shared.state.write().await;
+                if state.expire_qr(Instant::now()) { shared.changed(); }
+                if state.qr_send.is_none() { let _ = engine.set_qr_invitation(None); }
+                drop(state);
                 let expired = shared.state.read().await.visibility_expires_at.is_some_and(|deadline| now() >= deadline);
                 if expired { let _ = apply_operation(&shared, &mut engine, &outgoing, Action::Visibility(0)).await; }
                 let stale: Vec<u32> = {
@@ -993,6 +1116,8 @@ mod tests {
                     hotspot: false,
                 },
                 errors: vec![],
+                qr_send_supported: true,
+                qr_send: None,
             }),
             share_selections: RwLock::new(ShareSelections::default()),
             revisions,
@@ -1014,6 +1139,72 @@ mod tests {
 
     async fn snapshot_json_at(shared: &Shared, at: Instant) -> serde_json::Value {
         serde_json::from_str(&shared.snapshot_at(at).await.unwrap()).unwrap()
+    }
+
+    fn offer_for_test(files: Vec<String>) -> QrOffer {
+        let invitation = Arc::new(QrInvitation::new().unwrap());
+        let view = qr_view(&invitation, files.len(), 1).unwrap();
+        QrOffer { view, invitation, files }
+    }
+
+    #[tokio::test]
+    async fn qr_snapshot_keeps_selected_paths_and_signing_context_private_and_expires_at_boundary() {
+        let (shared, _) = shared_for_test();
+        let offer = offer_for_test(vec!["/private/selected-secret-name".into()]);
+        let expires = offer.invitation.expires_at();
+        shared.state.write().await.qr_send = Some(offer);
+        let snapshot = snapshot_json_at(&shared, expires - Duration::from_nanos(1)).await;
+        assert!(snapshot["qr_send"].is_object());
+        assert!(snapshot["qr_send"].get("files").is_none());
+        assert!(snapshot["qr_send"].get("invitation").is_none());
+        assert!(!snapshot.to_string().contains("/private/selected-secret-name"));
+        assert!(snapshot_json_at(&shared, expires).await["qr_send"].is_null());
+        assert!(shared.state.read().await.qr_send.is_none());
+    }
+
+    #[tokio::test]
+    async fn stopping_an_old_qr_cannot_withdraw_a_replacement_or_cancel_a_transfer() {
+        let (shared, _) = shared_for_test();
+        let old = offer_for_test(vec![]);
+        let current = offer_for_test(vec![]);
+        let current_id = current.view.id.clone();
+        shared.state.write().await.qr_send = Some(current);
+        let mut engine = RQS::default();
+        let (sender, _) = mpsc::channel(1);
+        apply_operation(&shared, &mut engine, &sender, Action::QrStop(old.view.id)).await.unwrap();
+        assert_eq!(shared.state.read().await.qr_send.as_ref().unwrap().view.id, current_id);
+        apply_operation(&shared, &mut engine, &sender, Action::QrStop(current_id)).await.unwrap();
+        let state = shared.state.read().await;
+        assert!(state.qr_send.is_none());
+        assert!(state.transfers.is_empty());
+    }
+
+    #[tokio::test]
+    async fn qr_claim_ignores_wrong_and_replayed_invitations_and_starts_only_one_transfer() {
+        struct TestFile(PathBuf);
+        impl Drop for TestFile {
+            fn drop(&mut self) { let _ = std::fs::remove_file(&self.0); }
+        }
+        let file = TestFile(std::env::temp_dir().join(format!("quickshare-qr-{}", uuid::Uuid::new_v4())));
+        std::fs::write(&file.0, b"QR selection").unwrap();
+        let (shared, _) = shared_for_test();
+        let offer = offer_for_test(vec![file.0.to_str().unwrap().into()]);
+        let id = offer.view.id.clone();
+        shared.state.write().await.qr_send = Some(offer);
+        let engine = RQS::default();
+        let (sender, mut receiver) = mpsc::channel(2);
+        let candidate = |id: String| QrPeer {
+            invitation_id: id, peer: peer("", "127.0.0.2:47593", Some("lan")), endpoint_id: "PEER".into(),
+        };
+        assert!(claim_qr(&shared, &engine, &sender, candidate("old-invitation".into()), Instant::now()).await.unwrap().is_none());
+        assert!(shared.state.read().await.transfers.is_empty());
+        assert!(claim_qr(&shared, &engine, &sender, candidate(id.clone()), Instant::now()).await.unwrap().is_some());
+        assert!(claim_qr(&shared, &engine, &sender, candidate(id), Instant::now()).await.unwrap().is_none());
+        let state = shared.state.read().await;
+        assert_eq!(state.transfers.len(), 1);
+        assert!(state.qr_send.is_none());
+        assert!(receiver.try_recv().is_ok());
+        assert!(matches!(receiver.try_recv(), Err(mpsc::error::TryRecvError::Empty)));
     }
 
     #[tokio::test]

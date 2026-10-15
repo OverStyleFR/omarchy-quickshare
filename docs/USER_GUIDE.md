@@ -53,6 +53,20 @@ Visibility is temporary. Its expiry stops new discovery offers, not an already e
 
 A manually selected destination that disappears is cleared, not replaced with another device. A preloaded file selection never starts sending by itself.
 
+### Send with an Android Quick Share QR code
+
+Available in stable plugin and backend **0.3.0**:
+
+1. Connect the PC and Android device to the same local network. Keep Wi-Fi and Bluetooth enabled on Android.
+2. Select one or more files in the panel, or open a selection from Nautilus.
+3. Choose **Show QR**. You do not need to select a nearby destination.
+4. Scan the code with Android's Quick Share QR scanner, or its supported camera/Quick Settings QR scanner.
+5. When the transfer request appears, compare the verification code and confirm it on the PC. Handle any request shown on Android as well.
+
+The QR contains a temporary Quick Share public key, not file paths, Wi-Fi credentials or a web-download link. Only one invitation waits at a time; it expires after **120 seconds** and is consumed by the first matching receiver. **Close QR**, changing the selection or closing the panel withdraws a pending invitation. These actions do not cancel an already-created transfer: use its **Cancel** control.
+
+This QR flow discovers receivers over **LAN**; it does not implement Bluetooth-only QR discovery or permanent Bluetooth pairing. Existing Bluetooth sending and receiving remain available through the ordinary workflow. If **Show QR** asks you to update the service, updating QML alone is not sufficient; update the native plugin to stable **0.3.0**, then use **Settings → Service → Update service**. See the [stable upgrade instructions](INSTALLATION.md#update), including how to return an alpha checkout to `main`.
+
 ### From Nautilus
 
 Select one or multiple local files, right-click and choose **Send via Quick Share**. This opens the panel with the exact selection; you still control the destination, Send and consent.
@@ -97,7 +111,7 @@ Since **v0.2.0**, open **Settings → Transfer effects** and enable **Animated t
 
 - Preparation/connection uses orbiting signal beacons; active file sending uses outgoing paper packets; receiving uses inward packets and rings.
 - Confirmed **Wi-Fi / LAN**, **Bluetooth** and **Direct Wi-Fi / hotspot** have different motifs. An unconfirmed transport stays neutral rather than guessing from radio availability.
-- With the panel open, the halo stays outside the card and its safety margin. Closing the panel moves the activity to a small courier companion near the bar.
+- With the panel open, the halo stays outside the card and its safety margin. Closing the panel moves the small courier companion to the **lower-left corner**, away from the upper-right notification stack and clear of a left or bottom bar. Notifications keep their normal location and behavior.
 - The overlay does not accept pointer or keyboard input. Turning it off immediately removes the overlay and animation clock.
 
 To try the visuals without a phone, choose **Preview activity** and **Preview transport**, then **Preview · 8 s**. **Stop** ends it immediately. These eight-second previews perform no file or network transfer, accept no PIN, and do not modify the real transfer model or network permission. Real active transfers take priority.

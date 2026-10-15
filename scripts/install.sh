@@ -16,7 +16,7 @@ if package_installed; then
   require_commands pacman vercmp
   VERSION=$("$SYSTEM_BINARY" --version)
   VERSION=${VERSION##* }
-  [[ $VERSION =~ ^[0-9]+\.[0-9]+\.[0-9]+$ ]] || fail 'Cannot determine the packaged backend version.' 'No se puede determinar la versión del servicio empaquetado.'
+  [[ $VERSION =~ ^[0-9]+\.[0-9]+\.[0-9]+(-[0-9A-Za-z]+([.-][0-9A-Za-z]+)*)?$ ]] || fail 'Cannot determine the packaged backend version.' 'No se puede determinar la versión del servicio empaquetado.'
   if [[ $ACTION == update || $(vercmp "$VERSION" 0.1.2) -lt 0 ]]; then
     require_commands makepkg cargo rustc protoc pkg-config sudo
     confirm \

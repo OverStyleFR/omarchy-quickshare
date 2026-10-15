@@ -207,7 +207,7 @@ message ConnectionResponseFrame {
 }
 
 // A paired key encryption packet sent between devices, contains signed data.
-// NEXT_ID=3
+// NEXT_ID=5
 message PairedKeyEncryptionFrame {
   // The encrypted data in byte array format.
   optional bytes signed_data = 1;
@@ -217,6 +217,10 @@ message PairedKeyEncryptionFrame {
 
   // An optional encrypted data in byte array format.
   optional bytes optional_signed_data = 3;
+
+  // Sender's P1363 ECDSA-P256/SHA256 signature over the UKEY2 auth token.
+  // Native QR field from NearDrop add655c6c5a40b9ba03c0329b598f2817185f5a9.
+  optional bytes qr_code_handshake_data = 4;
 }
 
 // A paired key verification result packet sent between devices.
