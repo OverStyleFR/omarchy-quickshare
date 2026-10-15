@@ -38,5 +38,7 @@ jobs:
           for script in scripts/*.sh packaging/PKGBUILD; do
             bash -n "$script"
           done
+      - name: Check service maintenance transitions
+        run: bash scripts/tests/service-maintenance.sh
       - name: Check Python extension syntax without importing desktop libraries
         run: python3 -c 'import ast; from pathlib import Path; ast.parse(Path("nautilus/omarchy_quickshare.py").read_text())'

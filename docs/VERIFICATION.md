@@ -131,6 +131,14 @@ The real Rust client opened the desktop's GTK folder chooser with directory sele
 
 Folder selection runs in the Rust client/desktop portal outside the shared Quickshell process. These checks did not replace the user's clipboard, run an unbounded clipboard payload, change the installed backend or modify radio/network configuration.
 
+## First-install service lifecycle — 0.2.6
+
+The maintenance helper now distinguishes `LoadState=not-found` from existing loaded/masked units. Five shell regressions exercise installation continuation for an absent unit, an absent-unit query with a nonzero status, successful existing-unit maintenance, and loaded/masked stop failures that must prevent replacement. CI runs these regressions without a host service manager.
+
+A private HOME/session bus exercised the published ownership, pause and unit-installation helpers. With no user unit present, source-mode registration continued, created owned unit/drop-in and Nautilus registration, enabled its fixture target and started the actual Rust daemon under NoNewPrivileges. Its real v1 status had no transfers or errors. A second pause used the existing-unit path and shut the daemon down cleanly. Only manager/process control and package-mode detection used adapters; this is not a claim of a new host systemd installation or a new source compilation. The prebuilt 0.2.5 daemon was used because the correction is in the shell lifecycle, not the transfer engine.
+
+The user's installed service, preferences, radio/network configuration and received files were not modified by this lifecycle smoke.
+
 ## Evidence interpretation
 
 Successful transfer means engine completion plus the stated integrity method. A valid media container, a round trip, a capability label or 0/0 bytes alone is not independent destination integrity.

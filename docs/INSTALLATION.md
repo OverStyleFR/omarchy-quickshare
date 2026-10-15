@@ -92,6 +92,21 @@ Native Omarchy removal owns the widget's bar entry and inline shell settings. Th
 
 Setup records ownership outside the disposable Git plugin checkout and refuses unrelated destination collisions. Updates/removal stop at an active-transfer guard rather than interrupt someone else's files. Backend configuration, language and received files survive maintenance; deleting personal data is a separate user decision.
 
+### First installation: “Unit omarchy-quickshare.service not loaded”
+
+Versions through **0.2.5** could compile successfully, then abort before creating the user unit because maintenance tried to stop a unit that did not exist yet. **0.2.6** skips stopping only when systemd reports `LoadState=not-found`; failures stopping an existing unit still abort maintenance.
+
+Update the native plugin, reopen its panel and choose **Install service** again:
+
+```bash
+omarchy plugin update macondo.quickshare
+```
+
+If the panel retains the previous version, run `omarchy restart shell` before reopening it. On a first installation, use **Install service**, not **Update service**: the source backend may not have been installed yet. The compiler's deprecated-field warnings are separate from this failure.
+
+No uninstall, manual unit creation or removal of preferences/downloads is needed. If you applied a local workaround, preserve it before updating a modified Git checkout; the upstream fix already includes the absent-unit guard.
+
+
 Useful diagnostics:
 
 ```bash
