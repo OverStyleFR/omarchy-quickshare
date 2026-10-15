@@ -126,7 +126,10 @@ check_nautilus() {
 pause_service() {
   check_idle
   printf 'disabled\n' > "$STATE_DIR/disabled"
-  systemctl --user stop omarchy-quickshare.service
+  # First installation writes the unit later in install_unit().
+  if [[ $(systemctl --user show omarchy-quickshare.service --property=LoadState --value) != not-found ]]; then
+    systemctl --user stop omarchy-quickshare.service
+  fi
 }
 register_nautilus() {
   mkdir -p "$(dirname "$NAUTILUS_EXTENSION")"
