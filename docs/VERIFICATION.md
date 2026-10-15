@@ -123,6 +123,13 @@ An independent Python protobuf/cryptography receiver ran across a private veth p
 The actual Panel.qml and Service.qml ran against a real private QR backend. Showing QR without a selected peer, file count, close-during-start, selection-change withdrawal and panel-close withdrawal were exercised. The Spanish panel's rendered QR was decoded with an independent barcode reader; English live labels were inspected. Later capture attempts encountered the host display locked/DPMS off; it was not woken or unlocked.
 
 These are source/runtime and independent-peer interoperability observations, not a claim of a new physical Android QR scan. No host backend was installed or restarted and no marketplace update was requested. Temporary peers and UI/backend processes were removed after observation.
+## Native download-folder selection — 0.2.5
+
+The editable download-path control was removed rather than hidden or made read-only. Runtime inspection of the real Panel.qml and native Omarchy components found no TextInput, TextEdit or TextField descendants with Settings collapsed or expanded. The replacement path label and folder action were rendered in English and Spanish.
+
+The real Rust client opened the desktop's GTK folder chooser with directory selection and single-selection mode. Controlled portal responses on a private D-Bus session then exercised the real client, QML command completion and daemon: accepted folders, a Unicode/quoted folder name and explicit cancellation. The selected directory was persisted exactly; cancellation preserved it; no selected path appeared in the client command argument log. No transfer was created. Native dialog rendering and the controlled-response assertions are separate observations; native acceptance is not claimed from the response adapter.
+
+Folder selection runs in the Rust client/desktop portal outside the shared Quickshell process. These checks did not replace the user's clipboard, run an unbounded clipboard payload, change the installed backend or modify radio/network configuration.
 
 ## Evidence interpretation
 

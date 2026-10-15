@@ -41,7 +41,7 @@ After first setup, save work and restart Nautilus to load its extension.
 
 *Compare the code on both devices before accepting.*
 
-Received files go to your configured download folder. You can change it in the panel.
+Received files go to your configured download folder. Change it with **Settings → Choose folder…**.
 
 ## Send to Android
 

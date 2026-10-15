@@ -790,23 +790,17 @@ Ui.Panel {
               font.pixelSize: Style.font.bodySmall
               wrapMode: Text.WrapAnywhere
             }
-            RowLayout {
+            ActionButton {
               Layout.fillWidth: true
-              spacing: Style.spacing.controlGap
-              Ui.TextField {
-                id: directory
-                Layout.fillWidth: true
-                placeholderText: root.tr("/absolute/path/to/downloads", "/ruta/absoluta/de/descargas")
-                foreground: root.foreground
-                Accessible.name: root.tr("Download folder", "Carpeta de descargas")
-                enabled: root.enabledActions
-                onAccepted: if (root.enabledActions) service.downloadDirectory(text)
-              }
-              ActionButton {
-                text: root.tr("Save", "Guardar")
-                enabled: root.enabledActions && directory.text.length > 0
-                onClicked: service.downloadDirectory(directory.text)
-              }
+              text: service && service.pickingDirectory ? root.tr("Choosing folder…", "Eligiendo carpeta…") : root.tr("Choose folder…", "Elegir carpeta…")
+              enabled: root.enabledActions && service.directoryPickerSupported && !service.pickingDirectory
+              onClicked: { service.pickDownloadDirectory(); root.close() }
+            }
+            BodyText {
+              visible: root.connected && !service.directoryPickerSupported
+              text: root.tr("Update service to choose a download folder.", "Actualiza el servicio para elegir la carpeta de descargas.")
+              color: root.dim
+              font.pixelSize: Style.font.bodySmall
             }
           }
         }

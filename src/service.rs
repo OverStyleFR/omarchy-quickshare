@@ -111,6 +111,7 @@ struct Snapshot {
     visibility_expires_at: Option<u64>,
     network_consent: bool,
     download_directory: String,
+    directory_picker_supported: bool,
     devices: Vec<Device>,
     transfers: Vec<Transfer>,
     capabilities: Capabilities,
@@ -868,6 +869,7 @@ pub async fn serve(port: u16, download: Option<PathBuf>, options: EngineOptions)
             network_consent: false,
             instance_id: uuid::Uuid::new_v4().to_string(),
             download_directory: directory.to_string_lossy().into_owned(),
+            directory_picker_supported: true,
             devices: Vec::new(),
             transfers: Vec::new(),
             capabilities,
@@ -1105,6 +1107,7 @@ mod tests {
                 network_consent: false,
                 instance_id: "test-instance".into(),
                 download_directory: "/tmp".into(),
+                directory_picker_supported: true,
                 devices: vec![],
                 transfers: vec![],
                 capabilities: Capabilities {
