@@ -51,6 +51,12 @@ enum Command {
     Send {
         peer: String,
     },
+    /// Show an Android-native QR invitation for a JSON file-path array on stdin.
+    QrSend,
+    /// Withdraw only the identified pending QR invitation.
+    QrStop {
+        id: String,
+    },
     /// Open the panel with a JSON path array on stdin; never start a transfer.
     Share,
     /// Consume a prepared selection and print its JSON path array.
@@ -273,6 +279,14 @@ async fn main() -> Result<()> {
                     let paths = canonical_files(&read_files(io::stdin().lock())?)?;
                     let id: String = proxy.call("Send", &(peer, paths)).await?;
                     println!("{id}");
+                }
+                Command::QrSend => {
+                    let paths = canonical_files(&read_files(io::stdin().lock())?)?;
+                    let invitation: String = proxy.call("StartQrSend", &(paths,)).await?;
+                    print_json_line(&invitation)?;
+                }
+                Command::QrStop { id } => {
+                    let _: () = proxy.call("StopQrSend", &(id,)).await?;
                 }
                 Command::TakeShare { token } => {
                     let paths: Vec<String> = proxy.call("TakeShare", &(token,)).await?;
