@@ -25,6 +25,7 @@ Item {
   property var cancellingTransfers: ({})
   property int pendingCommands: 0
   property bool picking: false
+  property bool pickingDirectory: false
   property var selectedFiles: []
   property int selectionGeneration: 0
   property var pendingShare: null
@@ -54,6 +55,7 @@ Item {
   readonly property bool busy: pendingCommands > 0 || setupBusy
   readonly property var devices: snapshot ? snapshot.devices : []
   readonly property var transfers: snapshot ? snapshot.transfers : []
+  readonly property bool directoryPickerSupported: !!snapshot && snapshot.directory_picker_supported === true
   readonly property bool discoverable: online && snapshot && snapshot.visible &&
     (snapshot.visibility_expires_at === null || snapshot.visibility_expires_at > now)
   readonly property int remainingSeconds: discoverable && snapshot.visibility_expires_at !== null
@@ -229,7 +231,7 @@ Item {
       stdinEnabled: inputPayload !== undefined,
       inputPayload: inputPayload === undefined ? "" : JSON.stringify(inputPayload)
     })
-    if (kind !== "picker") pendingCommands++
+    if (kind !== "picker" && kind !== "directory-picker") pendingCommands++
     task.running = true
   }
   function refresh() {
@@ -243,9 +245,11 @@ Item {
   }
   function setDiscoverable(enabled) { invoke(["visible", enabled ? "120" : "0"]) }
   function consent(enabled) { invoke(["network-consent", enabled ? "on" : "off"]) }
-  function downloadDirectory(path) {
-    if (!path || path[0] !== "/") { fail("Choose an absolute folder path.", "Elige una ruta absoluta de carpeta."); return }
-    invoke(["download-dir"], "action", "", path)
+  function pickDownloadDirectory() {
+    if (!online || busy || pickingDirectory || !directoryPickerSupported ||
+        serviceDisabled || !backendInstalled || !backendCompatible) return
+    pickingDirectory = true
+    invoke(["pick-files", "--directory"], "directory-picker")
   }
   function setSelectedFiles(files) {
     if (!Array.isArray(files) || files.length === 0 ||
@@ -491,8 +495,9 @@ Item {
       stderr: StdioCollector { id: errors; waitForEnd: true }
       onExited: function(exitCode, exitStatus) { finish(exitCode, exitStatus) }
       function finish(exitCode, exitStatus) {
-        if (purpose !== "picker") root.pendingCommands--
+        if (purpose !== "picker" && purpose !== "directory-picker") root.pendingCommands--
         if (purpose === "picker") root.picking = false
+        if (purpose === "directory-picker") root.pickingDirectory = false
         if ((purpose === "picker" || purpose === "take-share") && selectionRequest !== root.selectionGeneration) {
           Qt.callLater(function() { task.destroy() })
           return
@@ -530,6 +535,15 @@ Item {
               // An empty portal result means cancellation, not a new selection.
               if (!Array.isArray(files) || files.length > 0) root.setSelectedFiles(files)
             } catch (e) { root.fail("Cannot read the file picker result.", "No se pudo leer el resultado del selector de archivos.", e.message) }
+          } else if (purpose === "directory-picker") {
+            try {
+              var directories = JSON.parse(output.text)
+              if (!Array.isArray(directories) || directories.length > 1 ||
+                  (directories.length === 1 && (typeof directories[0] !== "string" || directories[0][0] !== "/")))
+                throw new Error("Expected one local folder or a cancelled selection")
+              if (directories.length === 1 && root.online && sourceGeneration === root.generation)
+                root.invoke(["download-dir"], "action", "", directories[0])
+            } catch (e) { root.fail("Cannot read the folder picker result.", "No se pudo leer el resultado del selector de carpetas.", e.message) }
           } else if (purpose === "take-share") {
             try {
               root.setSelectedFiles(JSON.parse(output.text))

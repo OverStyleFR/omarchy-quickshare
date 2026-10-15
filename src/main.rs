@@ -68,8 +68,11 @@ enum Command {
     },
     /// Set the download directory from a JSON string on stdin.
     DownloadDir,
-    /// Select local files through the desktop portal; output a JSON array.
-    PickFiles,
+    /// Select local files or one directory through the desktop portal; output a JSON array.
+    PickFiles {
+        #[arg(long)]
+        directory: bool,
+    },
     /// Report actual local tools and radio capabilities (not Android interoperability).
     Doctor,
 }
@@ -199,10 +202,15 @@ async fn main() -> Result<()> {
     }
     match cli.command {
         Command::Share => share(&read_files(io::stdin().lock())?).await?,
-        Command::PickFiles => {
+        Command::PickFiles { directory } => {
             let selection = ashpd::desktop::file_chooser::SelectedFiles::open_file()
-                .title("Compartir con Quick Share")
-                .multiple(true)
+                .title(if directory {
+                    "Quick Share — Download folder"
+                } else {
+                    "Compartir con Quick Share"
+                })
+                .directory(directory)
+                .multiple(!directory)
                 .modal(false)
                 .send()
                 .await

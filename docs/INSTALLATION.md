@@ -73,6 +73,8 @@ Backend **0.1.2 or newer** supports the private file-selection handoff and the U
 
 Backend **0.2.4** includes the bounded discovery lifecycle plus the incoming LAN-first/shared-port improvements from alpha. Updating QML or reloading the shell alone does not update the running daemon. Update the native plugin, then use its explicit service update action to apply these backend changes. An older marketplace snapshot does not verify the newer upstream code.
 
+Backend **0.2.5** adds the native folder-picker mode. The panel no longer creates an editable download-path field, including when Settings is collapsed. Updating the panel removes that shared-shell clipboard-reading path immediately; **Update service** supplies folder selection. Older backends can continue their existing supported transfer actions, but the new folder button stays disabled until directory-picker support is reported.
+
 If Omarchy keeps a previously loaded component after a plugin update, use `omarchy restart shell` before opening its updated controls. Shell reload does not itself cancel the independent daemon's transfers, but service maintenance still requires them to end first.
 
 ## Remove

@@ -109,7 +109,9 @@ Transfer effects are a UI feature compatible with backend **0.1.2 or newer**; en
 
 Choose **English** or **Español** in the panel. This controls the panel, bar, file-manager action and new project notifications. File names, device names and technical errors remain unchanged.
 
-Choose an existing absolute download directory in the panel. The initial destination is Downloads. Do not use a destination that you cannot write or that lacks space for the offered files.
+In **Settings**, select **Choose folder… / Elegir carpeta…** to open the system's folder chooser. The panel closes so it does not cover that dialog. Select an existing writable directory; cancelling keeps the current destination. Reopen the panel to see the selected path. The initial destination is Downloads.
+
+The path is displayed as non-editable text, not an embedded text input. Folder selection requires backend **0.2.5 or newer** with directory-picker support; an older backend shows an update hint rather than offering an unsupported action. Do not choose a destination that lacks space for the offered files.
 
 ## Network permissions
 

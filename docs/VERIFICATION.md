@@ -108,6 +108,14 @@ A private executable exercised production mDNS record decoding, real TCP connect
 
 These records were synthetic and lease deadlines were explicit test instants, not a claimed 120-second wall-clock wait or native Android run. No multicast advertisement, radio change, network configuration change or host-service update was performed. The temporary runtime modules and executable were removed after observation.
 
+## Native download-folder selection — 0.2.5
+
+The editable download-path control was removed rather than hidden or made read-only. Runtime inspection of the real Panel.qml and native Omarchy components found no TextInput, TextEdit or TextField descendants with Settings collapsed or expanded. The replacement path label and folder action were rendered in English and Spanish.
+
+The real Rust client opened the desktop's GTK folder chooser with directory selection and single-selection mode. Controlled portal responses on a private D-Bus session then exercised the real client, QML command completion and daemon: accepted folders, a Unicode/quoted folder name and explicit cancellation. The selected directory was persisted exactly; cancellation preserved it; no selected path appeared in the client command argument log. No transfer was created. Native dialog rendering and the controlled-response assertions are separate observations; native acceptance is not claimed from the response adapter.
+
+Folder selection runs in the Rust client/desktop portal outside the shared Quickshell process. These checks did not replace the user's clipboard, run an unbounded clipboard payload, change the installed backend or modify radio/network configuration.
+
 ## Evidence interpretation
 
 Successful transfer means engine completion plus the stated integrity method. A valid media container, a round trip, a capability label or 0/0 bytes alone is not independent destination integrity.
