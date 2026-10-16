@@ -1,5 +1,10 @@
 # Omarchy Quick Share
 
+**Support this project**
+
+[![Donate with PayPal](https://img.shields.io/badge/PayPal-Donate-0070BA?style=for-the-badge&logo=paypal&logoColor=white)](https://www.paypal.com/donate/?hosted_button_id=KBAUBYYDNHQNQ)
+[![Sponsor on GitHub](https://img.shields.io/badge/GitHub-Sponsor-EA4AAA?style=for-the-badge&logo=githubsponsors&logoColor=white)](https://github.com/sponsors/PuroDelphi)
+
 **Android Quick Share, right in your Omarchy desktop.**
 
 Send photos, videos and files between your Android phone and Omarchy using the phone's existing **Quick Share**. Use a local network for file sharing or Bluetooth when a shared network is unavailable. No companion Android app is required.
@@ -7,9 +12,6 @@ Send photos, videos and files between your Android phone and Omarchy using the p
 ![Omarchy Quick Share — Android file sharing for your desktop](preview.png)
 
 **Powered by Jhonny Suárez - PuroDelphi**
-
-[![Donate with PayPal](https://img.shields.io/badge/PayPal-Donate-0070BA?logo=paypal&logoColor=white)](https://www.paypal.com/donate/?hosted_button_id=KBAUBYYDNHQNQ)
-[![Sponsor on GitHub](https://img.shields.io/badge/GitHub-Sponsor-EA4AAA?logo=githubsponsors&logoColor=white)](https://github.com/sponsors/PuroDelphi)
 
 - **Native desktop experience:** a theme-integrated bar widget, transfer panel and incoming notifications.
 - **One file or a whole selection:** send from the panel or Nautilus's **Send via Quick Share** menu.
