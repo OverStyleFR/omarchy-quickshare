@@ -1,17 +1,10 @@
 # Omarchy Quick Share
 
-**Support this project**
-
-[![Donate with PayPal](https://img.shields.io/badge/PayPal-Donate-0070BA?style=for-the-badge&logo=paypal&logoColor=white)](https://www.paypal.com/donate/?hosted_button_id=KBAUBYYDNHQNQ)
-[![Sponsor on GitHub](https://img.shields.io/badge/GitHub-Sponsor-EA4AAA?style=for-the-badge&logo=githubsponsors&logoColor=white)](https://github.com/sponsors/PuroDelphi)
-
 **Android Quick Share, right in your Omarchy desktop.**
 
 Send photos, videos and files between your Android phone and Omarchy using the phone's existing **Quick Share**. Use a local network for file sharing or Bluetooth when a shared network is unavailable. No companion Android app is required.
 
 ![Omarchy Quick Share — Android file sharing for your desktop](preview.png)
-
-**Powered by Jhonny Suárez - PuroDelphi**
 
 - **Native desktop experience:** a theme-integrated bar widget, transfer panel and incoming notifications.
 - **One file or a whole selection:** send from the panel or Nautilus's **Send via Quick Share** menu.
@@ -92,3 +85,7 @@ Service removal preserves configuration and received files. The terminal explain
 Original project code is [MIT](LICENSE). The vendored rquickshare core remains **GPL-3.0-only**, with separately licensed schemas; the combined daemon is **not MIT-only**. See the [component licenses and source obligations](docs/ARCHITECTURE.md#licenses-and-corresponding-source).
 
 This is an independent project, not an official Google, Android or Omarchy product. Product names belong to their respective owners.
+
+Powered by JhonnySuarez - PuroDelphi. Support the project through [GitHub Sponsors](https://github.com/sponsors/PuroDelphi) or [PayPal](https://www.paypal.com/donate/?hosted_button_id=KBAUBYYDNHQNQ).
+
+[![PayPal donation QR](docs/assets/paypal-qr.png)](https://www.paypal.com/donate/?hosted_button_id=KBAUBYYDNHQNQ)
